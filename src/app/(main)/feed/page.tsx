@@ -65,51 +65,54 @@ export default function FeedPage() {
 
     const fetchPosts = async () => {
         setLoading(true);
+        console.log('[FeedFetch] Starting fetch...');
         try {
-            const { data, error } = await supabase
+            // Try with simpler join first
+            let { data, error } = await supabase
                 .from('posts')
-                .select('*, profiles!posts_author_id_fkey(*)')
+                .select('*, profiles(*)')
                 .order('created_at', { ascending: false });
 
             if (error) {
-                console.error('Supabase error:', error.message, error.details);
-                throw error;
+                console.warn('[FeedFetch] Simple join failed, trying explicit FK:', error.message);
+                // Fallback to explicit FK if there's an ambiguity error
+                const { data: retryData, error: retryError } = await supabase
+                    .from('posts')
+                    .select('*, profiles!posts_author_id_fkey(*)')
+                    .order('created_at', { ascending: false });
+
+                if (retryError) throw retryError;
+                data = retryData;
             }
 
-            console.log('Fetched posts data:', data);
-
-            if (!data || data.length === 0) {
-                console.warn('No posts found in Supabase.');
-            }
+            console.log('[FeedFetch] Success:', data?.length, 'posts');
 
             const realPosts = (data || []).map(mapDbPostToPost);
-
-            // Blend real posts with some mock posts to keep the feed lively
             setPosts([...realPosts, ...mockPosts]);
         } catch (err: any) {
-            console.error('Error fetching posts:', err.message || err);
-            setPosts(mockPosts); // Fallback to mock data
+            console.error('[FeedFetch] Global Error:', err.message || err);
+            setPosts(mockPosts); // Always show mock data if everything else fails
         } finally {
             setLoading(false);
         }
     };
 
-    console.log('[FeedRender] authLoading:', authLoading, 'loading:', loading, 'postsCount:', posts.length);
-
     useEffect(() => {
-        console.log('[FeedMount] Mounted');
-        return () => console.log('[FeedUnmount] Unmounted');
-    }, []);
+        // Safety timeout: fetch anyway if auth takes too long (> 3s)
+        const timeout = setTimeout(() => {
+            if (loading && posts.length === 0) {
+                console.log('[FeedSafety] Auth took too long, fetching anyway...');
+                fetchPosts();
+            }
+        }, 3000);
 
-    useEffect(() => {
-        console.log('[FeedStateUpdate] loading:', loading, 'postsCount:', posts.length);
-    }, [loading, posts.length]);
-
-    useEffect(() => {
         if (!authLoading) {
+            clearTimeout(timeout);
             console.log('[FeedAuth] Auth ready, fetching posts...');
             fetchPosts();
         }
+
+        return () => clearTimeout(timeout);
     }, [authLoading]);
 
     const handleRefresh = () => {

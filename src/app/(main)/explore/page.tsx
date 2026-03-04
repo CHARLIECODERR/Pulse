@@ -1,22 +1,66 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, X, TrendingUp, Heart } from "lucide-react";
+import { Search, X, TrendingUp, Heart, Loader2 } from "lucide-react";
 import TopBar from "@/components/layout/TopBar";
 import { explorePosts, trendingTags, mockUsers, formatCount } from "@/lib/mockData";
+import { createClient } from "@/lib/supabase/client";
 
 export default function ExplorePage() {
+    const supabase = createClient();
     const [query, setQuery] = useState("");
     const [activeTag, setActiveTag] = useState<string | null>(null);
+    const [searchResults, setSearchResults] = useState<any[]>([]);
+    const [isSearching, setIsSearching] = useState(false);
 
-    const filtered = mockUsers.filter(
+    useEffect(() => {
+        const searchUsers = async () => {
+            if (!query.trim()) {
+                setSearchResults([]);
+                return;
+            }
+
+            setIsSearching(true);
+            try {
+                const { data, error } = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
+                    .limit(10);
+
+                if (error) throw error;
+                setSearchResults(data || []);
+            } catch (err) {
+                console.error('Search error:', err);
+            } finally {
+                setIsSearching(false);
+            }
+        };
+
+        const timer = setTimeout(searchUsers, 300);
+        return () => clearTimeout(timer);
+    }, [query]);
+
+    // Blend mock results for variety
+    const filteredMock = mockUsers.filter(
         (u) =>
-            !query ||
             u.username.toLowerCase().includes(query.toLowerCase()) ||
             u.displayName.toLowerCase().includes(query.toLowerCase())
     );
+
+    const allResults = [
+        ...searchResults.map(u => ({
+            id: u.id,
+            username: u.username,
+            displayName: u.display_name || u.username,
+            avatar: u.avatar_url || "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
+            followers: 0,
+            isFollowing: false
+        })),
+        ...filteredMock.filter(m => !searchResults.some(s => s.id === m.id))
+    ];
 
     return (
         <>
@@ -25,16 +69,30 @@ export default function ExplorePage() {
                 {/* Search bar */}
                 <div style={{ padding: "12px 16px 0" }}>
                     <div style={{ position: "relative" }}>
-                        <Search
-                            size={16}
-                            style={{
-                                position: "absolute",
-                                left: 12,
-                                top: "50%",
-                                transform: "translateY(-50%)",
-                                color: "var(--text-muted)",
-                            }}
-                        />
+                        {isSearching ? (
+                            <Loader2
+                                size={16}
+                                className="animate-spin"
+                                style={{
+                                    position: "absolute",
+                                    left: 12,
+                                    top: "50%",
+                                    transform: "translateY(-50%)",
+                                    color: "var(--accent-purple)",
+                                }}
+                            />
+                        ) : (
+                            <Search
+                                size={16}
+                                style={{
+                                    position: "absolute",
+                                    left: 12,
+                                    top: "50%",
+                                    transform: "translateY(-50%)",
+                                    color: "var(--text-muted)",
+                                }}
+                            />
+                        )}
                         <input
                             className="input-base"
                             value={query}
@@ -44,7 +102,7 @@ export default function ExplorePage() {
                         />
                         {query && (
                             <button
-                                onClick={() => setQuery("")}
+                                onClick={() => { setQuery(""); setSearchResults([]); }}
                                 style={{
                                     position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
                                     background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)",
@@ -65,17 +123,17 @@ export default function ExplorePage() {
                             exit={{ opacity: 0, y: -10 }}
                             style={{ padding: "8px 16px" }}
                         >
-                            {filtered.length === 0 ? (
+                            {allResults.length === 0 && !isSearching ? (
                                 <p style={{ textAlign: "center", color: "var(--text-muted)", padding: "24px 0", fontSize: "0.87rem" }}>
                                     No results for "{query}"
                                 </p>
                             ) : (
-                                filtered.map((user) => (
+                                allResults.map((user) => (
                                     <div key={user.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border-subtle)" }}>
                                         <Image src={user.avatar} alt={user.username} width={46} height={46} style={{ borderRadius: "var(--radius-full)" }} unoptimized />
                                         <div style={{ flex: 1 }}>
                                             <p style={{ fontSize: "0.88rem", fontWeight: 600 }}>{user.displayName}</p>
-                                            <p style={{ fontSize: "0.77rem", color: "var(--text-muted)" }}>@{user.username} · {formatCount(user.followers)} followers</p>
+                                            <p style={{ fontSize: "0.77rem", color: "var(--text-muted)" }}>@{user.username} {user.followers > 0 && `· ${formatCount(user.followers)} followers`}</p>
                                         </div>
                                         <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "0.78rem" }}>
                                             {user.isFollowing ? "Following" : "Follow"}
