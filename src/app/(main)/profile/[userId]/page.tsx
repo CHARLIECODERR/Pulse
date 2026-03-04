@@ -126,6 +126,26 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
     };
 
     useEffect(() => {
+        // Real-time stat sync
+        const channel = supabase.channel(`visitor-profile-posts-${userId}`)
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'posts'
+            }, (payload) => {
+                setPosts(prev => prev.map(post => {
+                    if (post.id === payload.new.id) {
+                        return {
+                            ...post,
+                            likes: payload.new.likes_count,
+                            comments: payload.new.comments_count
+                        };
+                    }
+                    return post;
+                }));
+            })
+            .subscribe();
+
         // Safety timeout for loading
         const timeout = setTimeout(() => {
             if (loading) {
@@ -138,7 +158,10 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
             clearTimeout(timeout);
         });
 
-        return () => clearTimeout(timeout);
+        return () => {
+            clearTimeout(timeout);
+            supabase.removeChannel(channel);
+        };
     }, [userId]);
 
     if (loading && !user) {

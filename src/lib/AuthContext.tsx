@@ -37,47 +37,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const router = useRouter();
 
     useEffect(() => {
+        let isMounted = true;
+
         // Check active session on mount
         const fetchSession = async () => {
+            console.log("[Auth] Checking active session...");
             const { data: { session } } = await supabase.auth.getSession();
-            setUser(session?.user ?? null);
+
+            if (!isMounted) return;
+
             if (session?.user) {
+                console.log("[Auth] Session found for", session.user.id);
+                setUser(session.user);
                 await fetchProfile(session.user.id);
             } else {
+                console.log("[Auth] No active session");
                 setLoading(false);
             }
         };
 
         fetchSession();
 
-        // Safety timeout: Ensure loading is ALWAYS turned off eventually (5s max)
+        // Safety timeout: Ensure loading is ALWAYS turned off eventually (4s max)
         const timeout = setTimeout(() => {
-            if (loading) {
+            if (loading && isMounted) {
                 console.warn("[AuthSafety] Auth check took too long, forcing loading to false");
                 setLoading(false);
             }
-        }, 5000);
+        }, 4000);
 
         // Listen for auth changes (login/logout)
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
-                setUser(session?.user ?? null);
-                if (session?.user) {
-                    await fetchProfile(session.user.id);
-                } else {
+                if (!isMounted) return;
+
+                console.log("[AuthEvent]", event);
+
+                if (event === 'SIGNED_IN') {
+                    setUser(session?.user ?? null);
+                    if (session?.user) await fetchProfile(session.user.id);
+                } else if (event === 'SIGNED_OUT') {
+                    setUser(null);
                     setProfile(null);
                     setLoading(false);
+                } else if (event === 'TOKEN_REFRESHED') {
+                    setUser(session?.user ?? null);
                 }
             }
         );
 
         return () => {
+            isMounted = false;
             clearTimeout(timeout);
             subscription.unsubscribe();
         };
     }, []);
 
     const fetchProfile = async (userId: string) => {
+        console.log("[Auth] Fetching profile for", userId);
         try {
             const { data, error } = await supabase
                 .from("profiles")
@@ -97,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 });
             }
         } catch (e) {
-            console.error("Error fetching profile", e);
+            console.error("[Auth] Error fetching profile", e);
         } finally {
             setLoading(false);
         }

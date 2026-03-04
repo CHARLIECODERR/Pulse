@@ -75,6 +75,26 @@ export default function ProfilePage() {
     };
 
     useEffect(() => {
+        // Real-time stat sync
+        const channel = supabase.channel('profile-posts-sync')
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'posts'
+            }, (payload) => {
+                setPosts(prev => prev.map(post => {
+                    if (post.id === payload.new.id) {
+                        return {
+                            ...post,
+                            likes: payload.new.likes_count,
+                            comments: payload.new.comments_count
+                        };
+                    }
+                    return post;
+                }));
+            })
+            .subscribe();
+
         // Safety timeout for loading
         const timeout = setTimeout(() => {
             if (loading) {
@@ -89,7 +109,10 @@ export default function ProfilePage() {
             fetchFollowStats();
         }
 
-        return () => clearTimeout(timeout);
+        return () => {
+            clearTimeout(timeout);
+            supabase.removeChannel(channel);
+        };
     }, [profile]);
 
     const savedPosts = mockPosts.filter((p) => p.isBookmarked);

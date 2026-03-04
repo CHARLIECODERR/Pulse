@@ -88,16 +88,15 @@ export default function FeedPage() {
     };
 
     useEffect(() => {
-        // Real-time subscription for new posts
+        // Real-time subscription for posts (NEW and UPDATES)
         const channel = supabase
-            .channel('realtime-posts')
+            .channel('realtime-posts-sync')
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
                 table: 'posts'
             }, async (payload) => {
-                console.log('[FeedRealtime] New post detected:', payload.new);
-                // Fetch the complete post with profile data
+                console.log('[FeedRealtime] New post:', payload.new.id);
                 const { data, error } = await supabase
                     .from('posts')
                     .select('*, profiles!author_id(*)')
@@ -108,6 +107,23 @@ export default function FeedPage() {
                     const newPost = mapDbPostToPost(data);
                     setPosts(prev => [newPost, ...prev]);
                 }
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'posts'
+            }, (payload) => {
+                console.log('[FeedRealtime] Post updated:', payload.new.id);
+                setPosts(prev => prev.map(post => {
+                    if (post.id === payload.new.id) {
+                        return {
+                            ...post,
+                            likes: payload.new.likes_count,
+                            comments: payload.new.comments_count
+                        };
+                    }
+                    return post;
+                }));
             })
             .subscribe();
 
@@ -121,7 +137,6 @@ export default function FeedPage() {
 
         if (!authLoading) {
             clearTimeout(timeout);
-            console.log('[FeedAuth] Auth ready, fetching posts...');
             fetchPosts();
         }
 
