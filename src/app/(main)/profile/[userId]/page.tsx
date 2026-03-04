@@ -7,25 +7,40 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Grid3X3, ExternalLink, Loader2 } from "lucide-react";
 import { mockUsers, mockPosts, formatCount, type Post } from "@/lib/mockData";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/lib/AuthContext";
+import { getFollowCounts, checkIsFollowing, followUser, unfollowUser } from "@/lib/supabase/follows";
 import PostDetailModal from "@/components/profile/PostDetailModal";
 
 export default function UserProfilePage({ params }: { params: Promise<{ userId: string }> }) {
     const { userId } = use(params);
+    const { profile: currentUser } = useAuth();
     const supabase = createClient();
     const [user, setUser] = useState<any>(null);
     const [posts, setPosts] = useState<Post[]>([]);
     const [loading, setLoading] = useState(true);
-    const [following, setFollowing] = useState(false);
+    const [isFollowing, setIsFollowing] = useState(false);
+    const [followStats, setFollowStats] = useState({ followers: 0, following: 0 });
     const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+    const [actionLoading, setActionLoading] = useState(false);
 
     const fetchProfileAndPosts = async () => {
         setLoading(true);
         try {
-            // 1. Fetch User Profile
+            // 1. Fetch Follow Stats (always)
+            const stats = await getFollowCounts(userId);
+            setFollowStats(stats);
+
+            // 2. Check if following (if logged in)
+            if (currentUser?.id) {
+                const status = await checkIsFollowing(currentUser.id, userId);
+                setIsFollowing(status);
+            }
+
+            // 3. Fetch User Profile
             const mockUser = mockUsers.find((u) => u.id === userId);
             if (mockUser) {
                 setUser(mockUser);
-                setFollowing(mockUser.isFollowing);
+                setIsFollowing(mockUser.isFollowing);
                 const userPosts = mockPosts.filter((_, i) => i % 2 === (userId === "u1" ? 0 : 1)).slice(0, 6);
                 setPosts(userPosts);
                 setLoading(false);
@@ -86,6 +101,27 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
             console.error('Error fetching profile:', err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const toggleFollow = async () => {
+        if (!currentUser?.id || actionLoading) return;
+
+        setActionLoading(true);
+        try {
+            if (isFollowing) {
+                await unfollowUser(currentUser.id, userId);
+                setIsFollowing(false);
+                setFollowStats(prev => ({ ...prev, followers: Math.max(0, prev.followers - 1) }));
+            } else {
+                await followUser(currentUser.id, userId);
+                setIsFollowing(true);
+                setFollowStats(prev => ({ ...prev, followers: prev.followers + 1 }));
+            }
+        } catch (err) {
+            console.error('Action failed:', err);
+        } finally {
+            setActionLoading(false);
         }
     };
 
@@ -155,8 +191,8 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
                     <div style={{ flex: 1, display: "flex", justifyContent: "space-around" }}>
                         {[
                             { label: "Posts", value: user.posts },
-                            { label: "Followers", value: user.followers },
-                            { label: "Following", value: user.following },
+                            { label: "Followers", value: followStats.followers },
+                            { label: "Following", value: followStats.following },
                         ].map(({ label, value }) => (
                             <div key={label} style={{ textAlign: "center" }}>
                                 <p style={{ fontSize: "1.1rem", fontWeight: 900, fontFamily: "'Nunito', sans-serif" }}>{formatCount(value)}</p>
@@ -181,11 +217,12 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
                 <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
                     <motion.button
                         whileTap={{ scale: 0.93 }}
-                        onClick={() => setFollowing((f) => !f)}
-                        className={following ? "btn-ghost" : "btn-primary"}
-                        style={{ flex: 1, padding: "10px 0", fontSize: "0.88rem" }}
+                        onClick={toggleFollow}
+                        disabled={actionLoading}
+                        className={isFollowing ? "btn-ghost" : "btn-primary"}
+                        style={{ flex: 1, padding: "10px 0", fontSize: "0.88rem", opacity: actionLoading ? 0.7 : 1 }}
                     >
-                        {following ? "✓ Following" : "Follow"}
+                        {actionLoading ? "..." : isFollowing ? "✓ Following" : "Follow"}
                     </motion.button>
                     <Link href="/messages" style={{ flex: 1 }}>
                         <motion.button whileTap={{ scale: 0.93 }} className="btn-ghost"

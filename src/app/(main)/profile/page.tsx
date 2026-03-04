@@ -8,6 +8,7 @@ import { currentUser, mockPosts, formatCount, type Post } from "@/lib/mockData";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/AuthContext";
 import { createClient } from "@/lib/supabase/client";
+import { getFollowCounts } from "@/lib/supabase/follows";
 import PostDetailModal from "@/components/profile/PostDetailModal";
 
 const TABS = [
@@ -21,8 +22,17 @@ export default function ProfilePage() {
     const supabase = createClient();
     const [activeTab, setActiveTab] = useState("posts");
     const [posts, setPosts] = useState<Post[]>([]);
+    const [followerCount, setFollowerCount] = useState(0);
+    const [followingCount, setFollowingCount] = useState(0);
     const [loading, setLoading] = useState(true);
     const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+
+    const fetchFollowStats = async () => {
+        if (!profile?.id) return;
+        const counts = await getFollowCounts(profile.id);
+        setFollowerCount(counts.followers);
+        setFollowingCount(counts.following);
+    };
 
     const fetchUserPosts = async () => {
         if (!profile) return;
@@ -65,7 +75,10 @@ export default function ProfilePage() {
     };
 
     useEffect(() => {
-        if (profile) fetchUserPosts();
+        if (profile) {
+            fetchUserPosts();
+            fetchFollowStats();
+        }
     }, [profile]);
 
     const savedPosts = mockPosts.filter((p) => p.isBookmarked);
@@ -125,8 +138,8 @@ export default function ProfilePage() {
                         <div style={{ flex: 1, display: "flex", justifyContent: "space-around" }}>
                             {[
                                 { label: "Posts", value: posts.length },
-                                { label: "Followers", value: 0 },
-                                { label: "Following", value: 0 },
+                                { label: "Followers", value: followerCount },
+                                { label: "Following", value: followingCount },
                             ].map(({ label, value }) => (
                                 <div key={label} style={{ textAlign: "center" }}>
                                     <p style={{ fontSize: "1.1rem", fontWeight: 700 }}>{formatCount(value)}</p>
