@@ -143,6 +143,40 @@ export default function CreatePage() {
                     </p>
                 </div>
 
+                <AnimatePresence>
+                    {isPosting && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            style={{
+                                position: "fixed", inset: 0, zIndex: 1000,
+                                background: "rgba(13,13,26,0.9)", backdropFilter: "blur(10px)",
+                                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20
+                            }}
+                        >
+                            <div style={{ position: "relative", width: 80, height: 80 }}>
+                                <motion.div
+                                    animate={{ rotate: 360 }}
+                                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                                    style={{
+                                        position: "absolute", inset: 0,
+                                        borderRadius: "50%", border: "4px solid transparent",
+                                        borderTopColor: "var(--accent-purple)", borderRightColor: "var(--accent-pink)"
+                                    }}
+                                />
+                                <div style={{ position: "absolute", inset: 10, borderRadius: "50%", background: "var(--bg-elevated)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <Upload size={30} className="pulse" color="var(--accent-purple)" />
+                                </div>
+                            </div>
+                            <div style={{ textAlign: "center" }}>
+                                <h3 style={{ fontSize: "1.1rem", fontWeight: 800, marginBottom: 4 }}>Sharing Post...</h3>
+                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Please wait, uploading your media</p>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
                 <AnimatePresence mode="wait">
                     {/* Step 0: Choose media */}
                     {step === 0 && (

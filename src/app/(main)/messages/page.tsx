@@ -62,7 +62,19 @@ export default function MessagesPage() {
                     const newMsg = payload.new as Message;
                     // Only add if we didn't just send it locally (optimistic)
                     setMessages((prev) => {
-                        if (prev.find(m => m.id === newMsg.id)) return prev;
+                        // Check if this message already exists (by real ID or optimistic match)
+                        const existingIndex = prev.findIndex(m =>
+                            m.id === newMsg.id ||
+                            (m.id.startsWith('temp-') && m.body === newMsg.body && m.sender_id === newMsg.sender_id)
+                        );
+
+                        if (existingIndex !== -1) {
+                            // Replace optimistic message with the real one
+                            const newMsgs = [...prev];
+                            newMsgs[existingIndex] = newMsg;
+                            return newMsgs;
+                        }
+
                         return [...prev, newMsg];
                     });
                     scrollToBottom();
@@ -242,7 +254,6 @@ export default function MessagesPage() {
                         style={{
                             position: "fixed", inset: 0, zIndex: 200,
                             background: "var(--bg-primary)",
-                            maxWidth: 480, left: "50%", transform: "translateX(-50%)",
                             display: "flex", flexDirection: "column",
                         }}
                     >
