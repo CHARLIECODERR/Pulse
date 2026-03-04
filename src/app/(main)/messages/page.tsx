@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Send, Smile, Phone, Video, Search, MessageCircle } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
 import TopBar from "@/components/layout/TopBar";
 import { useAuth } from "@/lib/AuthContext";
 import { createClient } from "@/lib/supabase/client";
@@ -43,6 +44,10 @@ export default function MessagesPage() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const targetUserId = searchParams.get('userId');
+    const [hasAutoOpened, setHasAutoOpened] = useState(false);
 
     // Load conversations on mount + Global Real-time for List
     useEffect(() => {
@@ -53,6 +58,13 @@ export default function MessagesPage() {
 
         console.log("[Messages] Profile ready, loading conversations for", profile.id);
         loadConversations();
+
+        // Handle auto-open from query param (Instagram-style flow)
+        if (targetUserId && !hasAutoOpened) {
+            console.log("[Messages] Auto-opening conversation with", targetUserId);
+            startOrOpenConversation(targetUserId);
+            setHasAutoOpened(true);
+        }
 
         // Subscribe to ANY message changes involving active conversations
         // This helps update the "last message" preview in the list in real-time
@@ -187,32 +199,50 @@ export default function MessagesPage() {
         if (data) setSearchResults(data);
     };
 
-    const startOrOpenConversation = async (otherUser: UserProfile) => {
+    const startOrOpenConversation = async (other: UserProfile | string) => {
         if (!profile) return;
         setSearchQuery("");
         setSearchResults([]);
+
+        let otherUser: UserProfile;
+        if (typeof other === 'string') {
+            console.log("[Messages] Fetching profile for auto-open:", other);
+            const { data, error } = await supabase.from('profiles').select('*').eq('id', other).single();
+            if (error || !data) {
+                console.error("[Messages] Could not find user for auto-open", error);
+                return;
+            }
+            otherUser = data;
+        } else {
+            otherUser = other;
+        }
 
         // Check if conversation exists
         let { data: existing } = await supabase
             .from('conversations')
             .select('id')
             .or(`and(participant_one.eq.${profile.id},participant_two.eq.${otherUser.id}),and(participant_one.eq.${otherUser.id},participant_two.eq.${profile.id})`)
-            .single();
+            .maybeSingle();
 
         let convId = existing?.id;
 
         // If not, create it
         if (!convId) {
+            console.log("[Messages] Creating new conversation...");
             // Postgres check constraint requires participant_one < participant_two
             const p1 = profile.id < otherUser.id ? profile.id : otherUser.id;
             const p2 = profile.id < otherUser.id ? otherUser.id : profile.id;
 
-            const { data: newConv } = await supabase
+            const { data: newConv, error: createError } = await supabase
                 .from('conversations')
                 .insert({ participant_one: p1, participant_two: p2 })
                 .select('id')
                 .single();
 
+            if (createError) {
+                console.error("[Messages] Failed to create conversation", createError);
+                return;
+            }
             convId = newConv?.id;
         }
 

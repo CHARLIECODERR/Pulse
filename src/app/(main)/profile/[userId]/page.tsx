@@ -259,7 +259,7 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
                     >
                         {actionLoading ? "..." : isFollowing ? "✓ Following" : "Follow"}
                     </motion.button>
-                    <Link href="/messages" style={{ flex: 1 }}>
+                    <Link href={`/messages?userId=${userId}`} style={{ flex: 1 }}>
                         <motion.button whileTap={{ scale: 0.93 }} className="btn-ghost"
                             style={{ width: "100%", padding: "10px 0", fontSize: "0.88rem" }}>
                             Message

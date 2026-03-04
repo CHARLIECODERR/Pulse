@@ -42,46 +42,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Check active session on mount
         const fetchSession = async () => {
             console.log("[Auth] Checking active session...");
-            const { data: { session } } = await supabase.auth.getSession();
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
 
-            if (!isMounted) return;
+                if (!isMounted) return;
 
-            if (session?.user) {
-                console.log("[Auth] Session found for", session.user.id);
-                setUser(session.user);
-                await fetchProfile(session.user.id);
-            } else {
-                console.log("[Auth] No active session");
-                setLoading(false);
+                if (session?.user) {
+                    console.log("[Auth] Session found for", session.user.id);
+                    setUser(session.user);
+                    await fetchProfile(session.user.id);
+                } else {
+                    console.log("[Auth] No active session");
+                    setLoading(false);
+                }
+            } catch (err) {
+                console.error("[Auth] Session check failed", err);
+                if (isMounted) setLoading(false);
             }
         };
 
         fetchSession();
 
-        // Safety timeout: Ensure loading is ALWAYS turned off eventually (6s max)
+        // Safety timeout: 10s max
         const timeout = setTimeout(() => {
             if (loading && isMounted) {
-                console.warn("[AuthSafety] Auth check took too long, forcing loading to false");
+                console.warn("[AuthSafety] Auth check timed out (10s), forcing ready.");
                 setLoading(false);
             }
-        }, 6000);
+        }, 10000);
 
-        // Listen for auth changes (login/logout)
+        // Listen for auth changes
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
                 if (!isMounted) return;
 
                 console.log("[AuthEvent]", event);
 
-                if (event === 'SIGNED_IN') {
+                if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
                     setUser(session?.user ?? null);
                     if (session?.user) await fetchProfile(session.user.id);
                 } else if (event === 'SIGNED_OUT') {
                     setUser(null);
                     setProfile(null);
                     setLoading(false);
-                } else if (event === 'TOKEN_REFRESHED') {
-                    setUser(session?.user ?? null);
                 }
             }
         );
@@ -96,10 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isFetchingProfile = useRef(false);
 
     const fetchProfile = async (userId: string, isRetry = false) => {
-        if (isFetchingProfile.current && !isRetry) {
-            console.log("[Auth] Profile fetch already in progress, skipping...");
-            return;
-        }
+        if (isFetchingProfile.current && !isRetry) return;
 
         console.log(`[Auth] Fetching profile (retry: ${isRetry}) for`, userId);
         isFetchingProfile.current = true;
@@ -122,14 +122,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     isVerified: data.is_verified,
                 });
             } else if (!isRetry) {
-                throw new Error("Profile not found, will retry...");
+                throw new Error("No data returned");
             }
         } catch (e) {
-            console.error(`[Auth] Error fetching profile (retry: ${isRetry})`, e);
+            console.error(`[Auth] Profile error (retry: ${isRetry})`, e);
             if (!isRetry) {
-                console.log("[Auth] Retrying profile fetch in 1s...");
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                isFetchingProfile.current = false; // Allow retry
+                console.log("[Auth] Retrying profile fetch in 1.5s...");
+                await new Promise(r => setTimeout(r, 1500));
+                isFetchingProfile.current = false;
                 return fetchProfile(userId, true);
             }
         } finally {
