@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Send, Smile, Phone, Video, Search, MessageCircle } from "lucide-react";
+import { ArrowLeft, Send, Smile, Phone, Video, Search, MessageCircle, Loader2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import TopBar from "@/components/layout/TopBar";
 import { useAuth } from "@/lib/AuthContext";
@@ -32,7 +32,7 @@ interface Message {
     created_at: string;
 }
 
-export default function MessagesPage() {
+function MessagesContent() {
     const { profile } = useAuth();
     const supabase = createClient();
 
@@ -100,7 +100,7 @@ export default function MessagesPage() {
         return () => {
             supabase.removeChannel(listChannel);
         }
-    }, [profile]);
+    }, [profile, targetUserId, hasAutoOpened]); // Added dependencies for stability
 
     // Subscribe to real-time new messages for the active conversation
     useEffect(() => {
@@ -146,11 +146,11 @@ export default function MessagesPage() {
         const { data: convs, error } = await supabase
             .from('conversations')
             .select(`
-        id,
-        last_message_at,
-        participant_one,
-        participant_two
-      `)
+                id,
+                last_message_at,
+                participant_one,
+                participant_two
+            `)
             .or(`participant_one.eq.${profile.id},participant_two.eq.${profile.id}`)
             .order('last_message_at', { ascending: false });
 
@@ -174,7 +174,7 @@ export default function MessagesPage() {
                 other_user: user,
                 last_message_at: c.last_message_at,
                 last_msg: lastMsg?.body || "Started a conversation",
-                unread: 0, // Unread count logic can be added later
+                unread: 0,
             } as Conversation;
         }));
 
@@ -206,7 +206,6 @@ export default function MessagesPage() {
 
         let otherUser: UserProfile;
         if (typeof other === 'string') {
-            console.log("[Messages] Fetching profile for auto-open:", other);
             const { data, error } = await supabase.from('profiles').select('*').eq('id', other).single();
             if (error || !data) {
                 console.error("[Messages] Could not find user for auto-open", error);
@@ -217,7 +216,6 @@ export default function MessagesPage() {
             otherUser = other;
         }
 
-        // Check if conversation exists
         let { data: existing } = await supabase
             .from('conversations')
             .select('id')
@@ -226,10 +224,7 @@ export default function MessagesPage() {
 
         let convId = existing?.id;
 
-        // If not, create it
         if (!convId) {
-            console.log("[Messages] Creating new conversation...");
-            // Postgres check constraint requires participant_one < participant_two
             const p1 = profile.id < otherUser.id ? profile.id : otherUser.id;
             const p2 = profile.id < otherUser.id ? otherUser.id : profile.id;
 
@@ -287,7 +282,6 @@ export default function MessagesPage() {
         const body = input.trim();
         setInput("");
 
-        // Optimistic UI insert
         const tempId = `temp-${Date.now()}`;
         setMessages(prev => [...prev, {
             id: tempId,
@@ -298,7 +292,6 @@ export default function MessagesPage() {
         } as any]);
         scrollToBottom();
 
-        // Actual DB insert
         try {
             const { error } = await supabase.from('messages').insert({
                 conversation_id: activeConv.id,
@@ -307,13 +300,10 @@ export default function MessagesPage() {
             });
 
             if (error) throw error;
-            console.log("[Messages] Message sent successfully");
         } catch (err) {
             console.error("[Messages] Failed to send message:", err);
-            // Optionally remove from UI or show error state
         }
 
-        // Update local conversation list order
         loadConversations();
     };
 
@@ -324,7 +314,6 @@ export default function MessagesPage() {
 
     return (
         <>
-            {/* Active Chat View Modal */}
             <AnimatePresence>
                 {activeConv && (
                     <motion.div initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
@@ -335,7 +324,6 @@ export default function MessagesPage() {
                             display: "flex", flexDirection: "column",
                         }}
                     >
-                        {/* Chat header */}
                         <div style={{
                             background: "rgba(13,13,26,0.96)",
                             backdropFilter: "blur(24px)",
@@ -366,7 +354,6 @@ export default function MessagesPage() {
                             </div>
                         </div>
 
-                        {/* Messages Area */}
                         <div className="custom-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
                             {messages.length === 0 && (
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5, gap: 10 }}>
@@ -380,7 +367,6 @@ export default function MessagesPage() {
                                     <motion.div key={msg.id}
                                         initial={{ opacity: 0, y: 10, scale: 0.9 }}
                                         animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        transition={{ delay: i === messages.length - 1 ? 0 : 0 }}
                                         style={{ display: "flex", justifyContent: fromMe ? "flex-end" : "flex-start", gap: 8, alignItems: "flex-end" }}
                                     >
                                         {!fromMe && (
@@ -406,7 +392,6 @@ export default function MessagesPage() {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        {/* Content Input Area */}
                         <div style={{ padding: "10px 14px 20px", borderTop: "var(--stroke-width) solid var(--border-subtle)", display: "flex", gap: 10, alignItems: "center", background: "var(--bg-primary)" }}>
                             <motion.button whileTap={{ scale: 0.85 }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent-yellow)", flexShrink: 0 }}>
                                 <Smile size={22} />
@@ -434,11 +419,8 @@ export default function MessagesPage() {
                 )}
             </AnimatePresence>
 
-            {/* Main Messages List Page */}
             <TopBar title="Messages" />
             <main className="page-content">
-
-                {/* Search / New Chat */}
                 <div style={{ padding: "12px 16px 0", position: "relative" }}>
                     <div style={{ position: "relative" }}>
                         <Search size={16} style={{ position: "absolute", left: 14, top: 12, color: "var(--text-muted)" }} />
@@ -449,7 +431,6 @@ export default function MessagesPage() {
                             style={{ width: "100%", padding: "10px 14px 10px 38px", fontSize: "0.88rem" }} />
                     </div>
 
-                    {/* Search Dropdown Results */}
                     <AnimatePresence>
                         {searchResults.length > 0 && (
                             <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -474,7 +455,6 @@ export default function MessagesPage() {
                     </AnimatePresence>
                 </div>
 
-                {/* Existing Conversations List */}
                 <div style={{ marginTop: 24 }}>
                     <div style={{ padding: "4px 16px 8px" }}>
                         <p style={{ fontSize: "0.8rem", fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.5px" }}>YOUR CONVERSATIONS</p>
@@ -524,5 +504,17 @@ export default function MessagesPage() {
                 </div>
             </main>
         </>
+    );
+}
+
+export default function MessagesPage() {
+    return (
+        <Suspense fallback={
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100dvh", background: "var(--bg-primary)" }}>
+                <Loader2 className="animate-spin" size={32} color="var(--accent-purple)" />
+            </div>
+        }>
+            <MessagesContent />
+        </Suspense>
     );
 }
