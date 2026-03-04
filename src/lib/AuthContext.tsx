@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
@@ -93,8 +93,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
     }, []);
 
+    const isFetchingProfile = useRef(false);
+
     const fetchProfile = async (userId: string) => {
+        if (isFetchingProfile.current) {
+            console.log("[Auth] Profile fetch already in progress, skipping...");
+            return;
+        }
+
         console.log("[Auth] Fetching profile for", userId);
+        isFetchingProfile.current = true;
+
         try {
             const { data, error } = await supabase
                 .from("profiles")
@@ -116,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {
             console.error("[Auth] Error fetching profile", e);
         } finally {
+            isFetchingProfile.current = false;
             setLoading(false);
         }
     };

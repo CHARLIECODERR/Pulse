@@ -46,8 +46,12 @@ export default function MessagesPage() {
 
     // Load conversations on mount + Global Real-time for List
     useEffect(() => {
-        if (!profile) return;
+        if (!profile) {
+            console.log("[Messages] No profile yet, waiting...");
+            return;
+        }
 
+        console.log("[Messages] Profile ready, loading conversations for", profile.id);
         loadConversations();
 
         // Subscribe to ANY message changes involving active conversations
@@ -265,11 +269,19 @@ export default function MessagesPage() {
         scrollToBottom();
 
         // Actual DB insert
-        await supabase.from('messages').insert({
-            conversation_id: activeConv.id,
-            sender_id: profile.id,
-            body
-        });
+        try {
+            const { error } = await supabase.from('messages').insert({
+                conversation_id: activeConv.id,
+                sender_id: profile.id,
+                body
+            });
+
+            if (error) throw error;
+            console.log("[Messages] Message sent successfully");
+        } catch (err) {
+            console.error("[Messages] Failed to send message:", err);
+            // Optionally remove from UI or show error state
+        }
 
         // Update local conversation list order
         loadConversations();
