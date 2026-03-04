@@ -44,10 +44,46 @@ export default function MessagesPage() {
     const [input, setInput] = useState("");
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Load conversations on mount
+    // Load conversations on mount + Global Real-time for List
     useEffect(() => {
         if (!profile) return;
+
         loadConversations();
+
+        // Subscribe to ANY message changes involving active conversations
+        // This helps update the "last message" preview in the list in real-time
+        const listChannel = supabase.channel('realtime-msgs-list')
+            .on(
+                'postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'messages' },
+                async (payload) => {
+                    const newMsg = payload.new as any;
+
+                    // Find if this message belongs to any of our conversations
+                    setConversations((prev) => {
+                        const idx = prev.findIndex(c => c.id === newMsg.conversation_id);
+                        if (idx !== -1) {
+                            const updated = [...prev];
+                            const conv = { ...updated[idx] };
+                            conv.last_msg = newMsg.body;
+                            conv.last_message_at = newMsg.created_at;
+
+                            // Move to top
+                            updated.splice(idx, 1);
+                            return [conv, ...updated];
+                        } else {
+                            // If it's a new conversation we don't have in the list yet, reload all
+                            loadConversations();
+                            return prev;
+                        }
+                    });
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(listChannel);
+        }
     }, [profile]);
 
     // Subscribe to real-time new messages for the active conversation

@@ -75,16 +75,28 @@ export default function ProfilePage() {
     };
 
     useEffect(() => {
+        // Safety timeout for loading
+        const timeout = setTimeout(() => {
+            if (loading) {
+                console.warn('[ProfileSafety] Loading took too long, showing fallback');
+                setLoading(false);
+            }
+        }, 3000);
+
         if (profile) {
+            clearTimeout(timeout);
             fetchUserPosts();
             fetchFollowStats();
         }
+
+        return () => clearTimeout(timeout);
     }, [profile]);
 
     const savedPosts = mockPosts.filter((p) => p.isBookmarked);
     const tabPosts = activeTab === "posts" ? posts : activeTab === "saved" ? savedPosts : [];
 
-    if (authLoading || (loading && !profile)) {
+    // Only block if we have NO profile and auth is still loading
+    if (authLoading && !profile) {
         return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100dvh" }}>
                 <Loader2 className="spin" size={32} color="var(--accent-purple)" />
@@ -92,7 +104,14 @@ export default function ProfilePage() {
         );
     }
 
-    if (!profile) return null;
+    if (!profile) {
+        return (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100dvh", gap: 16 }}>
+                <p style={{ fontWeight: 700 }}>Unable to load profile</p>
+                <button onClick={() => window.location.reload()} className="btn-primary">Retry</button>
+            </div>
+        );
+    }
 
     return (
         <>

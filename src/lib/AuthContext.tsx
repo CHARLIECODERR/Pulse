@@ -50,6 +50,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         fetchSession();
 
+        // Safety timeout: Ensure loading is ALWAYS turned off eventually (5s max)
+        const timeout = setTimeout(() => {
+            if (loading) {
+                console.warn("[AuthSafety] Auth check took too long, forcing loading to false");
+                setLoading(false);
+            }
+        }, 5000);
+
         // Listen for auth changes (login/logout)
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
@@ -64,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         );
 
         return () => {
+            clearTimeout(timeout);
             subscription.unsubscribe();
         };
     }, []);

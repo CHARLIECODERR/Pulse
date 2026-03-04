@@ -67,23 +67,13 @@ export default function FeedPage() {
         setLoading(true);
         console.log('[FeedFetch] Starting fetch...');
         try {
-            // Try with simpler join first
-            let { data, error } = await supabase
+            // Fix join ambiguity by using specific FK
+            const { data, error } = await supabase
                 .from('posts')
-                .select('*, profiles(*)')
+                .select('*, profiles!author_id(*)')
                 .order('created_at', { ascending: false });
 
-            if (error) {
-                console.warn('[FeedFetch] Simple join failed, trying explicit FK:', error.message);
-                // Fallback to explicit FK if there's an ambiguity error
-                const { data: retryData, error: retryError } = await supabase
-                    .from('posts')
-                    .select('*, profiles!posts_author_id_fkey(*)')
-                    .order('created_at', { ascending: false });
-
-                if (retryError) throw retryError;
-                data = retryData;
-            }
+            if (error) throw error;
 
             console.log('[FeedFetch] Success:', data?.length, 'posts');
 
@@ -91,13 +81,36 @@ export default function FeedPage() {
             setPosts([...realPosts, ...mockPosts]);
         } catch (err: any) {
             console.error('[FeedFetch] Global Error:', err.message || err);
-            setPosts(mockPosts); // Always show mock data if everything else fails
+            setPosts(mockPosts);
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
+        // Real-time subscription for new posts
+        const channel = supabase
+            .channel('realtime-posts')
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'posts'
+            }, async (payload) => {
+                console.log('[FeedRealtime] New post detected:', payload.new);
+                // Fetch the complete post with profile data
+                const { data, error } = await supabase
+                    .from('posts')
+                    .select('*, profiles!author_id(*)')
+                    .eq('id', payload.new.id)
+                    .single();
+
+                if (!error && data) {
+                    const newPost = mapDbPostToPost(data);
+                    setPosts(prev => [newPost, ...prev]);
+                }
+            })
+            .subscribe();
+
         // Safety timeout: fetch anyway if auth takes too long (> 3s)
         const timeout = setTimeout(() => {
             if (loading && posts.length === 0) {
@@ -112,7 +125,10 @@ export default function FeedPage() {
             fetchPosts();
         }
 
-        return () => clearTimeout(timeout);
+        return () => {
+            clearTimeout(timeout);
+            supabase.removeChannel(channel);
+        };
     }, [authLoading]);
 
     const handleRefresh = () => {

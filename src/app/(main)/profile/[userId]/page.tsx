@@ -126,10 +126,22 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
     };
 
     useEffect(() => {
-        fetchProfileAndPosts();
+        // Safety timeout for loading
+        const timeout = setTimeout(() => {
+            if (loading) {
+                console.warn('[UserProfileSafety] Loading took too long, showing partial data');
+                setLoading(false);
+            }
+        }, 4000);
+
+        fetchProfileAndPosts().then(() => {
+            clearTimeout(timeout);
+        });
+
+        return () => clearTimeout(timeout);
     }, [userId]);
 
-    if (loading) {
+    if (loading && !user) {
         return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100dvh" }}>
                 <Loader2 className="spin" size={32} color="var(--accent-purple)" />
