@@ -18,18 +18,21 @@ export default function ExplorePage() {
 
     useEffect(() => {
         const searchUsers = async () => {
-            if (!query.trim()) {
+            const trimmedQuery = query.trim();
+            if (!trimmedQuery) {
                 setSearchResults([]);
                 return;
             }
 
             setIsSearching(true);
+            console.log(`[Explore] Searching for: ${trimmedQuery}`);
             try {
+                // Search by username or display name
                 const { data, error } = await supabase
                     .from('profiles')
                     .select('*')
-                    .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
-                    .limit(10);
+                    .or(`username.ilike.%${trimmedQuery}%,display_name.ilike.%${trimmedQuery}%`)
+                    .limit(15);
 
                 if (error) throw error;
                 setSearchResults(data || []);
@@ -40,7 +43,7 @@ export default function ExplorePage() {
             }
         };
 
-        const timer = setTimeout(searchUsers, 300);
+        const timer = setTimeout(searchUsers, 150);
         return () => clearTimeout(timer);
     }, [query]);
 

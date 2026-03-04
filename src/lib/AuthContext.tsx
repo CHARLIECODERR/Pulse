@@ -58,13 +58,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         fetchSession();
 
-        // Safety timeout: Ensure loading is ALWAYS turned off eventually (4s max)
+        // Safety timeout: Ensure loading is ALWAYS turned off eventually (6s max)
         const timeout = setTimeout(() => {
             if (loading && isMounted) {
                 console.warn("[AuthSafety] Auth check took too long, forcing loading to false");
                 setLoading(false);
             }
-        }, 4000);
+        }, 6000);
 
         // Listen for auth changes (login/logout)
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -95,13 +95,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const isFetchingProfile = useRef(false);
 
-    const fetchProfile = async (userId: string) => {
-        if (isFetchingProfile.current) {
+    const fetchProfile = async (userId: string, isRetry = false) => {
+        if (isFetchingProfile.current && !isRetry) {
             console.log("[Auth] Profile fetch already in progress, skipping...");
             return;
         }
 
-        console.log("[Auth] Fetching profile for", userId);
+        console.log(`[Auth] Fetching profile (retry: ${isRetry}) for`, userId);
         isFetchingProfile.current = true;
 
         try {
@@ -121,9 +121,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     bio: data.bio,
                     isVerified: data.is_verified,
                 });
+            } else if (!isRetry) {
+                throw new Error("Profile not found, will retry...");
             }
         } catch (e) {
-            console.error("[Auth] Error fetching profile", e);
+            console.error(`[Auth] Error fetching profile (retry: ${isRetry})`, e);
+            if (!isRetry) {
+                console.log("[Auth] Retrying profile fetch in 1s...");
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                isFetchingProfile.current = false; // Allow retry
+                return fetchProfile(userId, true);
+            }
         } finally {
             isFetchingProfile.current = false;
             setLoading(false);
