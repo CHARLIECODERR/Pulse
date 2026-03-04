@@ -23,13 +23,14 @@ CREATE INDEX IF NOT EXISTS idx_conversations_participants ON public.conversation
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON public.messages(conversation_id);
 
 -- RLS Policies for Conversations
-ALTER TABLE public.conversations ENABLE CONTROL; -- Note: 'ENABLE ROW LEVEL SECURITY' is standard, but check your Supabase version
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view their own conversations" ON public.conversations;
 CREATE POLICY "Users can view their own conversations"
 ON public.conversations FOR SELECT
 USING (auth.uid() = participant_one OR auth.uid() = participant_two);
 
+DROP POLICY IF EXISTS "Users can start conversations" ON public.conversations;
 CREATE POLICY "Users can start conversations"
 ON public.conversations FOR INSERT
 WITH CHECK (auth.uid() = participant_one OR auth.uid() = participant_two);
@@ -37,6 +38,7 @@ WITH CHECK (auth.uid() = participant_one OR auth.uid() = participant_two);
 -- RLS Policies for Messages
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view messages in their conversations" ON public.messages;
 CREATE POLICY "Users can view messages in their conversations"
 ON public.messages FOR SELECT
 USING (
@@ -47,6 +49,7 @@ USING (
     )
 );
 
+DROP POLICY IF EXISTS "Users can send messages to their conversations" ON public.messages;
 CREATE POLICY "Users can send messages to their conversations"
 ON public.messages FOR INSERT
 WITH CHECK (
@@ -69,6 +72,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS tr_update_conversation_timestamp ON public.messages;
 CREATE TRIGGER tr_update_conversation_timestamp
 AFTER INSERT ON public.messages
 FOR EACH ROW
