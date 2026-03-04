@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, X, TrendingUp, Heart, Loader2 } from "lucide-react";
@@ -129,16 +130,33 @@ export default function ExplorePage() {
                                 </p>
                             ) : (
                                 allResults.map((user) => (
-                                    <div key={user.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-                                        <Image src={user.avatar} alt={user.username} width={46} height={46} style={{ borderRadius: "var(--radius-full)" }} unoptimized />
-                                        <div style={{ flex: 1 }}>
-                                            <p style={{ fontSize: "0.88rem", fontWeight: 600 }}>{user.displayName}</p>
-                                            <p style={{ fontSize: "0.77rem", color: "var(--text-muted)" }}>@{user.username} {user.followers > 0 && `· ${formatCount(user.followers)} followers`}</p>
+                                    <Link key={user.id} href={`/profile/${user.id}`} style={{ textDecoration: "none", color: "inherit" }}>
+                                        <div style={{
+                                            display: "flex", alignItems: "center", gap: 12, padding: "10px 12px",
+                                            borderBottom: "1px solid var(--border-subtle)",
+                                            borderRadius: "var(--radius-md)",
+                                            transition: "background 0.2s"
+                                        }}
+                                            className="search-result-item"
+                                        >
+                                            <Image src={user.avatar} alt={user.username} width={46} height={46} style={{ borderRadius: "var(--radius-full)" }} unoptimized />
+                                            <div style={{ flex: 1 }}>
+                                                <p style={{ fontSize: "0.88rem", fontWeight: 600 }}>{user.displayName}</p>
+                                                <p style={{ fontSize: "0.77rem", color: "var(--text-muted)" }}>@{user.username} {user.followers > 0 && `· ${formatCount(user.followers)} followers`}</p>
+                                            </div>
+                                            <button
+                                                className="btn-ghost"
+                                                style={{ padding: "6px 14px", fontSize: "0.78rem" }}
+                                                onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    // Follow logic here
+                                                }}
+                                            >
+                                                {user.isFollowing ? "Following" : "Follow"}
+                                            </button>
                                         </div>
-                                        <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "0.78rem" }}>
-                                            {user.isFollowing ? "Following" : "Follow"}
-                                        </button>
-                                    </div>
+                                    </Link>
                                 ))
                             )}
                         </motion.div>
