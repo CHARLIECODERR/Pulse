@@ -12,7 +12,7 @@ import { useRouter } from "next/navigation";
 const STEP_LABELS = ["Choose Media", "Write Caption", "Add Tags", "Preview & Post"];
 
 export default function CreatePage() {
-    const { profile } = useAuth();
+    const { profile, user } = useAuth();
     const supabase = createClient();
     const router = useRouter();
     const [step, setStep] = useState(0);
@@ -46,14 +46,15 @@ export default function CreatePage() {
         step === 3;
 
     const handlePost = async () => {
-        if (!selectedFile || !profile) return;
+        const userId = profile?.id || user?.id;
+        if (!selectedFile || !userId) return;
         setIsPosting(true);
 
         try {
             // 1. Upload to Storage
             const fileExt = selectedFile.name.split('.').pop();
             const fileName = `${Math.random()}.${fileExt}`;
-            const filePath = `${profile.id}/${fileName}`;
+            const filePath = `${userId}/${fileName}`;
 
             const { error: uploadError } = await supabase.storage
                 .from('post-media')
@@ -72,7 +73,7 @@ export default function CreatePage() {
             const { data: dbData, error: dbError } = await supabase
                 .from('posts')
                 .insert({
-                    author_id: profile.id,
+                    author_id: userId,
                     image_url: publicUrl,
                     caption,
                     tags: tagArray

@@ -18,7 +18,7 @@ const TABS = [
 ];
 
 export default function ProfilePage() {
-    const { profile, loading: authLoading } = useAuth();
+    const { profile, user, loading: authLoading } = useAuth();
     const supabase = createClient();
     const [activeTab, setActiveTab] = useState("posts");
     const [posts, setPosts] = useState<Post[]>([]);
@@ -118,20 +118,29 @@ export default function ProfilePage() {
     const savedPosts = mockPosts.filter((p) => p.isBookmarked);
     const tabPosts = activeTab === "posts" ? posts : activeTab === "saved" ? savedPosts : [];
 
-    // Only block if we have NO profile and auth is still loading
-    if (authLoading && !profile) {
+    const effectiveProfile = profile || (user ? {
+        id: user.id,
+        username: "loading...",
+        displayName: "User",
+        avatarUrl: "https://api.dicebear.com/7.x/adventurer/svg?seed=" + user.id,
+        bio: "Loading profile data...",
+        isVerified: false
+    } : null);
+
+    // Only block if we have NO user and auth is still loading
+    if (authLoading && !effectiveProfile) {
         return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100dvh" }}>
-                <Loader2 className="spin" size={32} color="var(--accent-purple)" />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100dvh", background: "var(--bg-primary)" }}>
+                <Loader2 className="animate-spin" size={32} color="var(--accent-purple)" />
             </div>
         );
     }
 
-    if (!profile) {
+    if (!effectiveProfile) {
         return (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100dvh", gap: 16 }}>
-                <p style={{ fontWeight: 700 }}>Unable to load profile</p>
-                <button onClick={() => window.location.reload()} className="btn-primary">Retry</button>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100dvh", gap: 16, background: "var(--bg-primary)" }}>
+                <p style={{ fontWeight: 700 }}>Identity missing. Please log in again.</p>
+                <button onClick={() => window.location.href = '/login'} className="btn-primary">Go to Login</button>
             </div>
         );
     }
@@ -141,7 +150,7 @@ export default function ProfilePage() {
             {/* Custom top bar with settings */}
             <header className="top-bar">
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: "100%", padding: "0 16px" }}>
-                    <span style={{ fontSize: "1rem", fontWeight: 700 }}>@{profile.username}</span>
+                    <span style={{ fontSize: "1rem", fontWeight: 700 }}>@{effectiveProfile.username}</span>
                     <motion.button whileTap={{ scale: 0.88 }} style={{ background: "none", border: "none", color: "var(--text-secondary)", cursor: "pointer" }}>
                         <Settings size={20} />
                     </motion.button>
@@ -166,8 +175,8 @@ export default function ProfilePage() {
                         >
                             <div style={{ padding: 3, background: "var(--bg-primary)", borderRadius: "var(--radius-full)" }}>
                                 <Image
-                                    src={profile.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=user"}
-                                    alt={profile.displayName}
+                                    src={effectiveProfile.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=user"}
+                                    alt={effectiveProfile.displayName}
                                     width={78}
                                     height={78}
                                     style={{ borderRadius: "var(--radius-full)", display: "block" }}
@@ -193,8 +202,8 @@ export default function ProfilePage() {
 
                     {/* Name + bio */}
                     <div style={{ marginBottom: 14 }}>
-                        <p style={{ fontWeight: 700, fontSize: "0.95rem" }}>{profile.displayName}</p>
-                        <p style={{ fontSize: "0.83rem", color: "var(--text-secondary)", marginTop: 3, lineHeight: 1.4 }}>{profile.bio}</p>
+                        <p style={{ fontWeight: 700, fontSize: "0.95rem" }}>{effectiveProfile.displayName}</p>
+                        <p style={{ fontSize: "0.83rem", color: "var(--text-secondary)", marginTop: 3, lineHeight: 1.4 }}>{effectiveProfile.bio}</p>
                     </div>
 
                     {/* Action buttons */}

@@ -33,7 +33,7 @@ interface Message {
 }
 
 function MessagesContent() {
-    const { profile } = useAuth();
+    const { profile, user } = useAuth();
     const supabase = createClient();
 
     const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -54,15 +54,21 @@ function MessagesContent() {
     const [hasAutoOpened, setHasAutoOpened] = useState(false);
     const [rtStatus, setRtStatus] = useState<'SUBSCRIBED' | 'TIMED_OUT' | 'CLOSED' | 'CHANNEL_ERROR'>('CLOSED');
 
-    // Load conversations on mount + Global Real-time for List
+    // --- ULTIMATUM: Decoupled Logic ---
     useEffect(() => {
-        if (!profile) {
-            console.log("[Messages] No profile yet, waiting...");
+        const userId = profile?.id || user?.id;
+        if (!userId) {
+            console.log("[Messages] No user identity yet, waiting...");
             return;
         }
 
-        console.log("[Messages] Profile ready, loading conversations for", profile.id);
-        loadConversations();
+        console.log("[Messages] Identity ready, loading conversations for", userId);
+        loadConversations(userId);
+
+        if (targetUserId && !hasAutoOpened) {
+            startOrOpenConversation(targetUserId);
+            setHasAutoOpened(true);
+        }
 
         // Handle auto-open from query param (Instagram-style flow)
         if (targetUserId && !hasAutoOpened) {
@@ -141,8 +147,9 @@ function MessagesContent() {
         };
     }, [activeConv]);
 
-    const loadConversations = async () => {
-        if (!profile) return;
+    const loadConversations = async (explicitUserId?: string) => {
+        const userId = explicitUserId || profile?.id || user?.id;
+        if (!userId) return;
 
         // Fetch all conversations where user is a participant
         const { data: convs, error } = await supabase
@@ -153,15 +160,16 @@ function MessagesContent() {
                 participant_one,
                 participant_two
             `)
-            .or(`participant_one.eq.${profile.id},participant_two.eq.${profile.id}`)
+            .or(`participant_one.eq.${userId},participant_two.eq.${userId}`)
             .order('last_message_at', { ascending: false });
 
         if (error || !convs) return;
 
         // Resolve the "other user" profiles
+        const currentId = profile?.id || user?.id;
         const resolvedConvs = await Promise.all(convs.map(async (c) => {
-            const otherId = c.participant_one === profile.id ? c.participant_two : c.participant_one;
-            const { data: user } = await supabase.from('profiles').select('*').eq('id', otherId).single();
+            const otherId = c.participant_one === currentId ? c.participant_two : c.participant_one;
+            const { data: userData } = await supabase.from('profiles').select('*').eq('id', otherId).single();
 
             // Get the last message preview
             const { data: lastMsg } = await supabase.from('messages')
@@ -169,11 +177,11 @@ function MessagesContent() {
                 .eq('conversation_id', c.id)
                 .order('created_at', { ascending: false })
                 .limit(1)
-                .single();
+                .maybeSingle();
 
             return {
                 id: c.id,
-                other_user: user,
+                other_user: userData,
                 last_message_at: c.last_message_at,
                 last_msg: lastMsg?.body || "Started a conversation",
                 unread: 0,
@@ -185,7 +193,8 @@ function MessagesContent() {
 
     const handleSearch = async (query: string) => {
         setSearchQuery(query);
-        if (!query.trim() || !profile) {
+        const userId = profile?.id || user?.id;
+        if (!query.trim() || !userId) {
             setSearchResults([]);
             return;
         }
@@ -194,7 +203,7 @@ function MessagesContent() {
         const { data } = await supabase
             .from('profiles')
             .select('*')
-            .neq('id', profile.id)
+            .neq('id', userId)
             .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
             .limit(5);
 
@@ -202,7 +211,8 @@ function MessagesContent() {
     };
 
     const startOrOpenConversation = async (other: UserProfile | string) => {
-        if (!profile) return;
+        const userId = profile?.id || user?.id;
+        if (!userId) return;
         setSearchQuery("");
         setSearchResults([]);
 
@@ -221,14 +231,14 @@ function MessagesContent() {
         let { data: existing } = await supabase
             .from('conversations')
             .select('id')
-            .or(`and(participant_one.eq.${profile.id},participant_two.eq.${otherUser.id}),and(participant_one.eq.${otherUser.id},participant_two.eq.${profile.id})`)
+            .or(`and(participant_one.eq.${userId},participant_two.eq.${otherUser.id}),and(participant_one.eq.${otherUser.id},participant_two.eq.${userId})`)
             .maybeSingle();
 
         let convId = existing?.id;
 
         if (!convId) {
-            const p1 = profile.id < otherUser.id ? profile.id : otherUser.id;
-            const p2 = profile.id < otherUser.id ? otherUser.id : profile.id;
+            const p1 = userId < otherUser.id ? userId : otherUser.id;
+            const p2 = userId < otherUser.id ? otherUser.id : userId;
 
             const { data: newConv, error: createError } = await supabase
                 .from('conversations')
@@ -279,7 +289,8 @@ function MessagesContent() {
     };
 
     const sendMessage = async () => {
-        if (!input.trim() || !activeConv || !profile) return;
+        const userId = profile?.id || user?.id;
+        if (!input.trim() || !activeConv || !userId) return;
 
         const body = input.trim();
         setInput("");
@@ -288,7 +299,7 @@ function MessagesContent() {
         setMessages(prev => [...prev, {
             id: tempId,
             conversation_id: activeConv.id,
-            sender_id: profile.id,
+            sender_id: userId,
             body,
             created_at: new Date().toISOString()
         } as any]);
@@ -297,7 +308,7 @@ function MessagesContent() {
         try {
             const { error } = await supabase.from('messages').insert({
                 conversation_id: activeConv.id,
-                sender_id: profile.id,
+                sender_id: userId,
                 body
             });
 
@@ -306,7 +317,7 @@ function MessagesContent() {
             console.error("[Messages] Failed to send message:", err);
         }
 
-        loadConversations();
+        loadConversations(userId);
     };
 
     const formatTime = (isoString: string) => {

@@ -121,10 +121,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isFetchingProfile = useRef(false);
 
     const fetchProfile = async (userId: string, isRetry = false) => {
-        if (isFetchingProfile.current && !isRetry) return;
+        // If we have an auth user, we can already stop the global loading screen
+        if (user) setLoading(false);
+
+        if (isFetchingProfile.current && !isRetry) {
+            console.log("[Auth] Profile fetch already in progress, skipping duplicate call.");
+            return;
+        }
         isFetchingProfile.current = true;
 
         try {
+            console.log(`[Auth] Fetching profile for ${userId}...`);
             const { data, error } = await supabase
                 .from("profiles")
                 .select("*")
@@ -145,15 +152,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 localStorage.setItem("pulse_profile", JSON.stringify(newProfile));
             }
         } catch (e) {
-            console.error(`[Auth] Profile error`, e);
+            console.error(`[Auth] Profile fetch failed:`, e);
             if (!isRetry) {
+                console.log("[Auth] Retrying profile fetch in 1s...");
                 await new Promise(r => setTimeout(r, 1000));
                 isFetchingProfile.current = false;
                 return fetchProfile(userId, true);
             }
         } finally {
             isFetchingProfile.current = false;
-            setLoading(false);
+            setLoading(false); // Definitive end of loading
+            console.log("[Auth] Profile fetch cycle complete.");
         }
     };
 
