@@ -46,8 +46,13 @@ function MessagesContent() {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
     const searchParams = useSearchParams();
-    const targetUserId = searchParams.get('userId');
+    const [targetUserId, setTargetUserId] = useState<string | null>(null);
+    useEffect(() => {
+        setTargetUserId(searchParams.get('userId'));
+    }, [searchParams]);
+
     const [hasAutoOpened, setHasAutoOpened] = useState(false);
+    const [rtStatus, setRtStatus] = useState<'SUBSCRIBED' | 'TIMED_OUT' | 'CLOSED' | 'CHANNEL_ERROR'>('CLOSED');
 
     // Load conversations on mount + Global Real-time for List
     useEffect(() => {
@@ -74,8 +79,6 @@ function MessagesContent() {
                 { event: 'INSERT', schema: 'public', table: 'messages' },
                 async (payload) => {
                     const newMsg = payload.new as any;
-
-                    // Find if this message belongs to any of our conversations
                     setConversations((prev) => {
                         const idx = prev.findIndex(c => c.id === newMsg.conversation_id);
                         if (idx !== -1) {
@@ -83,24 +86,23 @@ function MessagesContent() {
                             const conv = { ...updated[idx] };
                             conv.last_msg = newMsg.body;
                             conv.last_message_at = newMsg.created_at;
-
-                            // Move to top
                             updated.splice(idx, 1);
                             return [conv, ...updated];
-                        } else {
-                            // If it's a new conversation we don't have in the list yet, reload all
-                            loadConversations();
-                            return prev;
                         }
+                        loadConversations();
+                        return prev;
                     });
                 }
             )
-            .subscribe();
+            .subscribe((status) => {
+                console.log("[Messages] List channel status:", status);
+                setRtStatus(status);
+            });
 
         return () => {
             supabase.removeChannel(listChannel);
         }
-    }, [profile, targetUserId, hasAutoOpened]); // Added dependencies for stability
+    }, [profile, targetUserId, hasAutoOpened]);
 
     // Subscribe to real-time new messages for the active conversation
     useEffect(() => {
@@ -271,9 +273,9 @@ function MessagesContent() {
     };
 
     const scrollToBottom = () => {
-        setTimeout(() => {
+        requestAnimationFrame(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
+        });
     };
 
     const sendMessage = async () => {
@@ -418,8 +420,23 @@ function MessagesContent() {
                     </motion.div>
                 )}
             </AnimatePresence>
-
-            <TopBar title="Messages" />
+            {/* Main Messages List Page */}
+            <div style={{ position: "relative" }}>
+                <TopBar title="Messages" />
+                <div style={{
+                    position: "absolute", right: 60, top: "calc(env(safe-area-inset-top) + 14px)",
+                    display: "flex", alignItems: "center", gap: 6, zIndex: 100
+                }}>
+                    <div style={{
+                        width: 8, height: 8, borderRadius: "50%",
+                        background: rtStatus === 'SUBSCRIBED' ? "var(--accent-green, #10b981)" : "var(--accent-red, #ef4444)",
+                        boxShadow: rtStatus === 'SUBSCRIBED' ? "0 0 8px var(--accent-green)" : "none"
+                    }} />
+                    <span style={{ fontSize: "0.6rem", color: "var(--text-muted)", fontWeight: 700 }}>
+                        {rtStatus === 'SUBSCRIBED' ? "LIVE" : "RECONNECTING"}
+                    </span>
+                </div>
+            </div>
             <main className="page-content">
                 <div style={{ padding: "12px 16px 0", position: "relative" }}>
                     <div style={{ position: "relative" }}>
