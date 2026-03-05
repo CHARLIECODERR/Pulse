@@ -7,10 +7,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Search, X, TrendingUp, Heart, Loader2 } from "lucide-react";
 import TopBar from "@/components/layout/TopBar";
 import { explorePosts, trendingTags, mockUsers, formatCount } from "@/lib/mockData";
-import { createClient } from "@/lib/supabase/client";
+import { db } from "@/lib/firebase/client";
+import { collection, query as firestoreQuery, orderBy, startAt, endAt, getDocs, limit } from "firebase/firestore";
 
 export default function ExplorePage() {
-    const supabase = createClient();
     const [query, setQuery] = useState("");
     const [activeTag, setActiveTag] = useState<string | null>(null);
     const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -27,15 +27,19 @@ export default function ExplorePage() {
             setIsSearching(true);
             console.log(`[Explore] Searching for: ${trimmedQuery}`);
             try {
-                // Search by username or display name
-                const { data, error } = await supabase
-                    .from('profiles')
-                    .select('*')
-                    .or(`username.ilike.%${trimmedQuery}%,display_name.ilike.%${trimmedQuery}%`)
-                    .limit(15);
+                // First simple prefix search on Firestore
+                const lowerQ = String(trimmedQuery).toLowerCase();
+                const q = firestoreQuery(
+                    collection(db, 'profiles'),
+                    orderBy('username'),
+                    startAt(lowerQ),
+                    endAt(lowerQ + '\uf8ff'),
+                    limit(15)
+                );
+                const snapshot = await getDocs(q);
+                const results = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
 
-                if (error) throw error;
-                setSearchResults(data || []);
+                setSearchResults(results);
             } catch (err) {
                 console.error('Search error:', err);
             } finally {
@@ -58,8 +62,8 @@ export default function ExplorePage() {
         ...searchResults.map(u => ({
             id: u.id,
             username: u.username,
-            displayName: u.display_name || u.username,
-            avatar: u.avatar_url || "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
+            displayName: u.displayName || u.display_name || u.username,
+            avatar: u.avatarUrl || u.avatar_url || "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
             followers: 0,
             isFollowing: false
         })),

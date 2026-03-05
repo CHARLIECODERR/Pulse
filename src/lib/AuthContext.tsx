@@ -1,9 +1,11 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { User } from "@supabase/supabase-js";
+import { auth, db } from "@/lib/firebase/client";
+import { User, onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
+import { requestNotificationPermissionAndGetToken } from "./firebase/messaging";
 
 // Define the shape of our auth context
 type PulseUser = {
@@ -33,13 +35,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [profile, setProfile] = useState<PulseUser | null>(null);
     const [loading, setLoading] = useState(true);
-    const supabase = createClient();
     const router = useRouter();
 
     useEffect(() => {
         let isMounted = true;
 
-        // --- NUCLEAR RESCUE: Optimistic Load ---
+        // --- Firebase Optimistic Load ---
         const cachedUser = localStorage.getItem("pulse_user");
         const cachedProfile = localStorage.getItem("pulse_profile");
         if (cachedUser && cachedProfile) {
@@ -49,129 +50,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setLoading(false);
         }
 
-        const fetchSession = async () => {
-            console.log("[Auth] Fast-track session check...");
-            try {
-                // getUser() is often more reliable/faster for initial check than getSession()
-                const { data: { user: authUser } } = await supabase.auth.getUser();
+        const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+            if (!isMounted) return;
 
-                if (!isMounted) return;
-
-                if (authUser) {
-                    console.log("[Auth] Verified user:", authUser.id);
-                    setUser(authUser);
-                    localStorage.setItem("pulse_user", JSON.stringify(authUser));
-                    await fetchProfile(authUser.id);
-                } else {
-                    console.log("[Auth] No session, clearing cache");
-                    localStorage.removeItem("pulse_user");
-                    localStorage.removeItem("pulse_profile");
-                    setUser(null);
-                    setProfile(null);
-                    setLoading(false);
-                }
-            } catch (err) {
-                console.error("[Auth] Fast-track failed", err);
-                if (isMounted) setLoading(false);
+            if (authUser) {
+                console.log("[Auth] Verified user:", authUser.uid);
+                setUser(authUser);
+                localStorage.setItem("pulse_user", JSON.stringify(authUser));
+                await fetchProfile(authUser.uid);
+            } else {
+                console.log("[Auth] No session, clearing cache");
+                localStorage.removeItem("pulse_user");
+                localStorage.removeItem("pulse_profile");
+                setUser(null);
+                setProfile(null);
+                setLoading(false);
             }
-        };
-
-        fetchSession();
-
-        // Safety timeout: 4s for feedback, 10s for force-ready
-        const timeout = setTimeout(() => {
-            if (loading && isMounted) {
-                console.warn("[AuthSafety] Connection slow, using optimistic or waiting...");
-                // Don't force loading false yet, give it more time if no cache
-                if (!cachedProfile) {
-                    setTimeout(() => { if (loading && isMounted) setLoading(false); }, 6000);
-                }
-            }
-        }, 4000);
-
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(
-            async (event, session) => {
-                if (!isMounted) return;
-                console.log("[AuthEvent]", event);
-
-                if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
-                    const u = session?.user ?? null;
-                    setUser(u);
-                    if (u) {
-                        localStorage.setItem("pulse_user", JSON.stringify(u));
-                        await fetchProfile(u.id);
-                    }
-                } else if (event === 'SIGNED_OUT') {
-                    localStorage.removeItem("pulse_user");
-                    localStorage.removeItem("pulse_profile");
-                    setUser(null);
-                    setProfile(null);
-                    setLoading(false);
-                }
-            }
-        );
+        });
 
         return () => {
             isMounted = false;
-            clearTimeout(timeout);
-            subscription.unsubscribe();
+            unsubscribe();
         };
     }, []);
 
-    const isFetchingProfile = useRef(false);
-
-    const fetchProfile = async (userId: string, isRetry = false) => {
-        // If we have an auth user, we can already stop the global loading screen
-        if (user) setLoading(false);
-
-        if (isFetchingProfile.current && !isRetry) {
-            console.log("[Auth] Profile fetch already in progress, skipping duplicate call.");
-            return;
-        }
-        isFetchingProfile.current = true;
-
+    const fetchProfile = async (userId: string) => {
         try {
             console.log(`[Auth] Fetching profile for ${userId}...`);
-            const { data, error } = await supabase
-                .from("profiles")
-                .select("*")
-                .eq("id", userId)
-                .single();
+            const docRef = doc(db, "profiles", userId);
+            const docSnap = await getDoc(docRef);
 
-            if (error) throw error;
-            if (data) {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
                 const newProfile = {
-                    id: data.id,
+                    id: userId,
                     username: data.username,
-                    displayName: data.display_name,
-                    avatarUrl: data.avatar_url,
-                    bio: data.bio,
-                    isVerified: data.is_verified,
+                    displayName: data.displayName || data.display_name,
+                    avatarUrl: data.avatarUrl || data.avatar_url,
+                    bio: data.bio || "",
+                    isVerified: data.isVerified || false,
                 };
                 setProfile(newProfile);
                 localStorage.setItem("pulse_profile", JSON.stringify(newProfile));
+
+                // Request notification permission and save token silently in background
+                if (typeof window !== "undefined") {
+                    // Only request if VAPID key is configured
+                    if (process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY && process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY !== "REPLACE_WITH_VAPID_KEY_FROM_CONSOLE") {
+                        requestNotificationPermissionAndGetToken(userId);
+                    }
+                }
+            } else {
+                console.log("[Auth] Profile document does not exist yet.");
+                setProfile(null);
             }
         } catch (e) {
             console.error(`[Auth] Profile fetch failed:`, e);
-            if (!isRetry) {
-                console.log("[Auth] Retrying profile fetch in 1s...");
-                await new Promise(r => setTimeout(r, 1000));
-                isFetchingProfile.current = false;
-                return fetchProfile(userId, true);
-            }
         } finally {
-            isFetchingProfile.current = false;
-            setLoading(false); // Definitive end of loading
-            console.log("[Auth] Profile fetch cycle complete.");
+            setLoading(false);
         }
     };
 
     const signOut = async () => {
-        isFetchingProfile.current = false;
         localStorage.removeItem("pulse_user");
         localStorage.removeItem("pulse_profile");
-        // Clear all cookies by signing out
-        await supabase.auth.signOut();
+        await firebaseSignOut(auth);
         setUser(null);
         setProfile(null);
         router.push("/login");

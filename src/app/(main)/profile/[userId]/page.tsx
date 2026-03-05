@@ -6,15 +6,15 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { ArrowLeft, Grid3X3, ExternalLink, Loader2 } from "lucide-react";
 import { mockUsers, mockPosts, formatCount, type Post } from "@/lib/mockData";
-import { createClient } from "@/lib/supabase/client";
+import { db } from "@/lib/firebase/client";
+import { doc, getDoc, collection, query, where, orderBy, getDocs, onSnapshot } from "firebase/firestore";
 import { useAuth } from "@/lib/AuthContext";
-import { getFollowCounts, checkIsFollowing, followUser, unfollowUser } from "@/lib/supabase/follows";
+import { getFollowCounts, checkIsFollowing, followUser, unfollowUser } from "@/lib/firebase/follows";
 import PostDetailModal from "@/components/profile/PostDetailModal";
 
 export default function UserProfilePage({ params }: { params: Promise<{ userId: string }> }) {
     const { userId } = use(params);
     const { profile: currentUser } = useAuth();
-    const supabase = createClient();
     const [user, setUser] = useState<any>(null);
     const [posts, setPosts] = useState<Post[]>([]);
     const [loading, setLoading] = useState(true);
@@ -47,50 +47,48 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
                 return;
             }
 
-            // If not mock, fetch from Supabase
-            const { data: profile, error: profileError } = await supabase
-                .from('profiles')
-                .select('*')
-                .eq('id', userId)
-                .single();
-
-            if (profileError) throw profileError;
+            // If not mock, fetch from Firestore
+            const profileSnap = await getDoc(doc(db, 'profiles', userId));
+            if (!profileSnap.exists()) throw new Error("Profile not found");
+            const profileData = profileSnap.data();
 
             setUser({
-                id: profile.id,
-                username: profile.username,
-                displayName: profile.display_name,
-                avatar: profile.avatar_url,
-                bio: profile.bio,
+                id: profileSnap.id,
+                username: profileData.username,
+                displayName: profileData.displayName || profileData.username,
+                avatar: profileData.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
+                bio: profileData.bio || "",
                 followers: 0,
                 following: 0,
                 posts: 0,
-                isVerified: profile.is_verified,
+                isVerified: profileData.isVerified || false,
             });
 
             // 2. Fetch User Posts
-            const { data: dbPosts, error: postsError } = await supabase
-                .from('posts')
-                .select('*')
-                .eq('author_id', userId)
-                .order('created_at', { ascending: false });
+            const q = query(
+                collection(db, 'posts'),
+                where('author_id', '==', userId),
+                orderBy('created_at', 'desc')
+            );
+            const postsSnap = await getDocs(q);
 
-            if (postsError) throw postsError;
-
-            const mappedPosts = (dbPosts || []).map((p: any) => ({
-                id: p.id,
-                author: { id: userId, username: profile.username, avatar: profile.avatar_url } as any,
-                image: p.image_url,
-                caption: p.caption,
-                tags: p.tags,
-                likes: p.likes_count,
-                comments: p.comments_count,
-                shares: 0,
-                isLiked: false,
-                isBookmarked: false,
-                timeAgo: new Date(p.created_at).toLocaleDateString(),
-                aspectRatio: "square" as const,
-            }));
+            const mappedPosts = postsSnap.docs.map((d) => {
+                const p = d.data();
+                return {
+                    id: d.id,
+                    author: { id: userId, username: profileData.username, avatar: profileData.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=user" } as any,
+                    image: p.image_url,
+                    caption: p.caption,
+                    tags: p.tags || [],
+                    likes: p.likes_count || 0,
+                    comments: p.comments_count || 0,
+                    shares: 0,
+                    isLiked: false,
+                    isBookmarked: false,
+                    timeAgo: p.created_at ? new Date(p.created_at).toLocaleDateString() : 'Just now',
+                    aspectRatio: "square" as const,
+                };
+            });
 
             setPosts(mappedPosts);
 
@@ -127,24 +125,33 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
 
     useEffect(() => {
         // Real-time stat sync
-        const channel = supabase.channel(`visitor-profile-posts-${userId}`)
-            .on('postgres_changes', {
-                event: 'UPDATE',
-                schema: 'public',
-                table: 'posts'
-            }, (payload) => {
-                setPosts(prev => prev.map(post => {
-                    if (post.id === payload.new.id) {
-                        return {
-                            ...post,
-                            likes: payload.new.likes_count,
-                            comments: payload.new.comments_count
-                        };
+        const q = query(
+            collection(db, 'posts'),
+            where('author_id', '==', userId),
+            orderBy('created_at', 'desc')
+        );
+
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            setPosts(prev => {
+                const newPosts = [...prev];
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'modified') {
+                        const data = change.doc.data();
+                        const idx = newPosts.findIndex(p => p.id === change.doc.id);
+                        if (idx !== -1) {
+                            newPosts[idx] = {
+                                ...newPosts[idx],
+                                likes: data.likes_count || 0,
+                                comments: data.comments_count || 0
+                            };
+                        }
+                    } else if (change.type === 'added') {
+                        // Already handled by initial fetch, but could append new ones here
                     }
-                    return post;
-                }));
-            })
-            .subscribe();
+                });
+                return newPosts;
+            });
+        });
 
         // Safety timeout for loading
         const timeout = setTimeout(() => {
@@ -160,7 +167,7 @@ export default function UserProfilePage({ params }: { params: Promise<{ userId: 
 
         return () => {
             clearTimeout(timeout);
-            supabase.removeChannel(channel);
+            unsubscribe();
         };
     }, [userId]);
 

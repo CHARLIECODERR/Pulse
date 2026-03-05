@@ -7,8 +7,9 @@ import TopBar from "@/components/layout/TopBar";
 import { currentUser, mockPosts, formatCount, type Post } from "@/lib/mockData";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/AuthContext";
-import { createClient } from "@/lib/supabase/client";
-import { getFollowCounts } from "@/lib/supabase/follows";
+import { db } from "@/lib/firebase/client";
+import { collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { getFollowCounts } from "@/lib/firebase/follows";
 import PostDetailModal from "@/components/profile/PostDetailModal";
 
 const TABS = [
@@ -19,7 +20,6 @@ const TABS = [
 
 export default function ProfilePage() {
     const { profile, user, loading: authLoading } = useAuth();
-    const supabase = createClient();
     const [activeTab, setActiveTab] = useState("posts");
     const [posts, setPosts] = useState<Post[]>([]);
     const [followerCount, setFollowerCount] = useState(0);
@@ -34,68 +34,49 @@ export default function ProfilePage() {
         setFollowingCount(counts.following);
     };
 
-    const fetchUserPosts = async () => {
-        if (!profile) return;
-        setLoading(true);
-        try {
-            const { data, error } = await supabase
-                .from('posts')
-                .select('*')
-                .eq('author_id', profile.id)
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-
-            const mappedPosts = (data || []).map((p: any) => ({
-                id: p.id,
-                author: {
-                    id: profile.id,
-                    username: profile.username,
-                    displayName: profile.displayName,
-                    avatar: profile.avatarUrl
-                } as any,
-                image: p.image_url,
-                caption: p.caption,
-                tags: p.tags,
-                likes: p.likes_count,
-                comments: p.comments_count,
-                shares: 0,
-                isLiked: false,
-                isBookmarked: false,
-                timeAgo: new Date(p.created_at).toLocaleDateString(),
-                aspectRatio: "square" as const,
-            }));
-
-            setPosts(mappedPosts);
-        } catch (err) {
-            console.error('Error fetching own posts:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     useEffect(() => {
-        // Real-time stat sync
-        const channel = supabase.channel('profile-posts-sync')
-            .on('postgres_changes', {
-                event: 'UPDATE',
-                schema: 'public',
-                table: 'posts'
-            }, (payload) => {
-                setPosts(prev => prev.map(post => {
-                    if (post.id === payload.new.id) {
-                        return {
-                            ...post,
-                            likes: payload.new.likes_count,
-                            comments: payload.new.comments_count
-                        };
-                    }
-                    return post;
-                }));
-            })
-            .subscribe();
+        let unsubscribe: () => void;
 
-        // Safety timeout for loading
+        const setupRealtime = () => {
+            if (!profile?.id) return;
+            setLoading(true);
+            const q = query(
+                collection(db, 'posts'),
+                where('author_id', '==', profile.id),
+                orderBy('created_at', 'desc')
+            );
+
+            unsubscribe = onSnapshot(q, (snapshot) => {
+                const mappedPosts = snapshot.docs.map(d => {
+                    const data = d.data();
+                    return {
+                        id: d.id,
+                        author: {
+                            id: profile.id,
+                            username: profile.username,
+                            displayName: profile.displayName,
+                            avatar: profile.avatarUrl
+                        } as any,
+                        image: data.image_url,
+                        caption: data.caption,
+                        tags: data.tags || [],
+                        likes: data.likes_count || 0,
+                        comments: data.comments_count || 0,
+                        shares: 0,
+                        isLiked: false,
+                        isBookmarked: false,
+                        timeAgo: data.created_at ? new Date(data.created_at).toLocaleDateString() : 'Just now',
+                        aspectRatio: "square" as const,
+                    };
+                });
+                setPosts(mappedPosts);
+                setLoading(false);
+            }, (err) => {
+                console.error('Error fetching own posts:', err);
+                setLoading(false);
+            });
+        };
+
         const timeout = setTimeout(() => {
             if (loading) {
                 console.warn('[ProfileSafety] Loading took too long, showing fallback');
@@ -105,13 +86,13 @@ export default function ProfilePage() {
 
         if (profile) {
             clearTimeout(timeout);
-            fetchUserPosts();
+            setupRealtime();
             fetchFollowStats();
         }
 
         return () => {
             clearTimeout(timeout);
-            supabase.removeChannel(channel);
+            if (unsubscribe) unsubscribe();
         };
     }, [profile]);
 
@@ -119,10 +100,10 @@ export default function ProfilePage() {
     const tabPosts = activeTab === "posts" ? posts : activeTab === "saved" ? savedPosts : [];
 
     const effectiveProfile = profile || (user ? {
-        id: user.id,
+        id: user.uid,
         username: "loading...",
         displayName: "User",
-        avatarUrl: "https://api.dicebear.com/7.x/adventurer/svg?seed=" + user.id,
+        avatarUrl: "https://api.dicebear.com/7.x/adventurer/svg?seed=" + user.uid,
         bio: "Loading profile data...",
         isVerified: false
     } : null);

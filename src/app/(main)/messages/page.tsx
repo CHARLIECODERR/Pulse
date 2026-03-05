@@ -7,7 +7,8 @@ import { ArrowLeft, Send, Smile, Phone, Video, Search, MessageCircle, Loader2 } 
 import { useRouter, useSearchParams } from "next/navigation";
 import TopBar from "@/components/layout/TopBar";
 import { useAuth } from "@/lib/AuthContext";
-import { createClient } from "@/lib/supabase/client";
+import { db } from "@/lib/firebase/client";
+import { collection, query, where, orderBy, onSnapshot, getDocs, getDoc, doc, setDoc, addDoc, limit } from "firebase/firestore";
 
 interface UserProfile {
     id: string;
@@ -34,7 +35,6 @@ interface Message {
 
 function MessagesContent() {
     const { profile, user } = useAuth();
-    const supabase = createClient();
 
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [searchQuery, setSearchQuery] = useState("");
@@ -54,206 +54,174 @@ function MessagesContent() {
     const [hasAutoOpened, setHasAutoOpened] = useState(false);
     const [rtStatus, setRtStatus] = useState<'SUBSCRIBED' | 'TIMED_OUT' | 'CLOSED' | 'CHANNEL_ERROR'>('CLOSED');
 
-    // --- ULTIMATUM: Decoupled Logic ---
     useEffect(() => {
-        const userId = profile?.id || user?.id;
+        const userId = profile?.id || user?.uid;
         if (!userId) {
             console.log("[Messages] No user identity yet, waiting...");
             return;
         }
 
-        console.log("[Messages] Identity ready, loading conversations for", userId);
-        loadConversations(userId);
-
-        if (targetUserId && !hasAutoOpened) {
-            startOrOpenConversation(targetUserId);
-            setHasAutoOpened(true);
-        }
-
-        // Handle auto-open from query param (Instagram-style flow)
         if (targetUserId && !hasAutoOpened) {
             console.log("[Messages] Auto-opening conversation with", targetUserId);
             startOrOpenConversation(targetUserId);
             setHasAutoOpened(true);
         }
 
-        // Subscribe to ANY message changes involving active conversations
-        // This helps update the "last message" preview in the list in real-time
-        const listChannel = supabase.channel('realtime-msgs-list')
-            .on(
-                'postgres_changes',
-                { event: 'INSERT', schema: 'public', table: 'messages' },
-                async (payload) => {
-                    const newMsg = payload.new as any;
-                    setConversations((prev) => {
-                        const idx = prev.findIndex(c => c.id === newMsg.conversation_id);
-                        if (idx !== -1) {
-                            const updated = [...prev];
-                            const conv = { ...updated[idx] };
-                            conv.last_msg = newMsg.body;
-                            conv.last_message_at = newMsg.created_at;
-                            updated.splice(idx, 1);
-                            return [conv, ...updated];
-                        }
-                        loadConversations();
-                        return prev;
-                    });
+        // Subscribe to conversations where this user is a participant
+        const q = query(
+            collection(db, 'conversations'),
+            where('participants', 'array-contains', userId),
+            orderBy('last_message_at', 'desc')
+        );
+
+        const unsubscribe = onSnapshot(q, async (snapshot) => {
+            const profilesMap = new Map<string, any>();
+
+            const resolvedConvs = await Promise.all(snapshot.docs.map(async (d) => {
+                const data = d.data();
+                // participants is an array of [userA, userB]
+                const otherId = data.participants.find((p: string) => p !== userId) || userId;
+
+                let userData = profilesMap.get(otherId);
+                if (!userData) {
+                    const userSnap = await getDoc(doc(db, 'profiles', otherId));
+                    if (userSnap.exists()) {
+                        const ud = userSnap.data();
+                        userData = {
+                            id: otherId,
+                            username: ud.username,
+                            display_name: ud.displayName || ud.username,
+                            avatar_url: ud.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=" + otherId,
+                            is_verified: ud.isVerified || false
+                        };
+                        profilesMap.set(otherId, userData);
+                    } else {
+                        userData = {
+                            id: otherId,
+                            username: "unknown",
+                            display_name: "Unknown User",
+                            avatar_url: "https://api.dicebear.com/7.x/adventurer/svg?seed=" + otherId,
+                            is_verified: false
+                        };
+                    }
                 }
-            )
-            .subscribe((status) => {
-                console.log("[Messages] List channel status:", status);
-                setRtStatus(status);
-            });
+
+                return {
+                    id: d.id,
+                    other_user: userData,
+                    last_message_at: data.last_message_at,
+                    last_msg: data.last_msg || "Started a conversation",
+                    unread: 0,
+                } as Conversation;
+            }));
+
+            setConversations(resolvedConvs);
+            setRtStatus('SUBSCRIBED');
+        }, (err) => {
+            console.error('[Messages] Conversations list error:', err);
+            setRtStatus('CHANNEL_ERROR');
+        });
 
         return () => {
-            supabase.removeChannel(listChannel);
+            unsubscribe();
         }
-    }, [profile, targetUserId, hasAutoOpened]);
+    }, [profile, user, targetUserId, hasAutoOpened]);
 
     // Subscribe to real-time new messages for the active conversation
     useEffect(() => {
         if (!activeConv) return;
 
-        const channel = supabase.channel(`room_${activeConv.id}`)
-            .on(
-                'postgres_changes',
-                { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeConv.id}` },
-                (payload) => {
-                    const newMsg = payload.new as Message;
-                    // Only add if we didn't just send it locally (optimistic)
-                    setMessages((prev) => {
-                        // Check if this message already exists (by real ID or optimistic match)
-                        const existingIndex = prev.findIndex(m =>
-                            m.id === newMsg.id ||
-                            (m.id.startsWith('temp-') && m.body === newMsg.body && m.sender_id === newMsg.sender_id)
-                        );
+        const q = query(
+            collection(db, 'messages'),
+            where('conversation_id', '==', activeConv.id),
+            orderBy('created_at', 'asc')
+        );
 
-                        if (existingIndex !== -1) {
-                            // Replace optimistic message with the real one
-                            const newMsgs = [...prev];
-                            newMsgs[existingIndex] = newMsg;
-                            return newMsgs;
-                        }
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const msgs = snapshot.docs.map(d => ({
+                id: d.id,
+                ...d.data()
+            } as Message));
 
-                        return [...prev, newMsg];
-                    });
-                    scrollToBottom();
-                }
-            )
-            .subscribe();
+            setMessages(msgs);
+            scrollToBottom();
+        });
 
         return () => {
-            supabase.removeChannel(channel);
+            unsubscribe();
         };
     }, [activeConv]);
 
-    const loadConversations = async (explicitUserId?: string) => {
-        const userId = explicitUserId || profile?.id || user?.id;
-        if (!userId) return;
-
-        // Fetch all conversations where user is a participant
-        const { data: convs, error } = await supabase
-            .from('conversations')
-            .select(`
-                id,
-                last_message_at,
-                participant_one,
-                participant_two
-            `)
-            .or(`participant_one.eq.${userId},participant_two.eq.${userId}`)
-            .order('last_message_at', { ascending: false });
-
-        if (error || !convs) return;
-
-        // Resolve the "other user" profiles
-        const currentId = profile?.id || user?.id;
-        const resolvedConvs = await Promise.all(convs.map(async (c) => {
-            const otherId = c.participant_one === currentId ? c.participant_two : c.participant_one;
-            const { data: userData } = await supabase.from('profiles').select('*').eq('id', otherId).single();
-
-            // Get the last message preview
-            const { data: lastMsg } = await supabase.from('messages')
-                .select('body')
-                .eq('conversation_id', c.id)
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-
-            return {
-                id: c.id,
-                other_user: userData,
-                last_message_at: c.last_message_at,
-                last_msg: lastMsg?.body || "Started a conversation",
-                unread: 0,
-            } as Conversation;
-        }));
-
-        setConversations(resolvedConvs);
-    };
-
-    const handleSearch = async (query: string) => {
-        setSearchQuery(query);
-        const userId = profile?.id || user?.id;
-        if (!query.trim() || !userId) {
+    const handleSearch = async (queryText: string) => {
+        setSearchQuery(queryText);
+        const userId = profile?.id || user?.uid;
+        if (!queryText.trim() || !userId) {
             setSearchResults([]);
             return;
         }
 
-        // Search profiles by username or display name
-        const { data } = await supabase
-            .from('profiles')
-            .select('*')
-            .neq('id', userId)
-            .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
-            .limit(5);
+        const lowerQ = queryText.toLowerCase();
+        const q = query(
+            collection(db, 'profiles'),
+            orderBy('username'),
+            where('username', '>=', lowerQ),
+            where('username', '<=', lowerQ + '\uf8ff'),
+            limit(5)
+        );
 
-        if (data) setSearchResults(data);
+        const filterSnap = await getDocs(q);
+        const results = filterSnap.docs
+            .filter(d => d.id !== userId)
+            .map(d => {
+                const ud = d.data();
+                return {
+                    id: d.id,
+                    username: ud.username,
+                    display_name: ud.displayName || ud.username,
+                    avatar_url: ud.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=" + d.id,
+                    is_verified: ud.isVerified || false
+                };
+            });
+
+        setSearchResults(results);
     };
 
     const startOrOpenConversation = async (other: UserProfile | string) => {
-        const userId = profile?.id || user?.id;
+        const userId = profile?.id || user?.uid;
         if (!userId) return;
         setSearchQuery("");
         setSearchResults([]);
 
         let otherUser: UserProfile;
         if (typeof other === 'string') {
-            const { data, error } = await supabase.from('profiles').select('*').eq('id', other).single();
-            if (error || !data) {
-                console.error("[Messages] Could not find user for auto-open", error);
+            const snap = await getDoc(doc(db, 'profiles', other));
+            if (!snap.exists()) {
+                console.error("[Messages] Could not find user for auto-open");
                 return;
             }
-            otherUser = data;
+            const ud = snap.data();
+            otherUser = {
+                id: snap.id,
+                username: ud.username,
+                display_name: ud.displayName || ud.username,
+                avatar_url: ud.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=" + snap.id,
+                is_verified: ud.isVerified || false
+            };
         } else {
             otherUser = other;
         }
 
-        let { data: existing } = await supabase
-            .from('conversations')
-            .select('id')
-            .or(`and(participant_one.eq.${userId},participant_two.eq.${otherUser.id}),and(participant_one.eq.${otherUser.id},participant_two.eq.${userId})`)
-            .maybeSingle();
+        const convId = userId < otherUser.id ? `${userId}_${otherUser.id}` : `${otherUser.id}_${userId}`;
+        const convRef = doc(db, 'conversations', convId);
+        const convSnap = await getDoc(convRef);
 
-        let convId = existing?.id;
-
-        if (!convId) {
-            const p1 = userId < otherUser.id ? userId : otherUser.id;
-            const p2 = userId < otherUser.id ? otherUser.id : userId;
-
-            const { data: newConv, error: createError } = await supabase
-                .from('conversations')
-                .insert({ participant_one: p1, participant_two: p2 })
-                .select('id')
-                .single();
-
-            if (createError) {
-                console.error("[Messages] Failed to create conversation", createError);
-                return;
-            }
-            convId = newConv?.id;
+        if (!convSnap.exists()) {
+            await setDoc(convRef, {
+                participants: [userId, otherUser.id],
+                last_message_at: new Date().toISOString(),
+                last_msg: ""
+            });
         }
-
-        if (!convId) return;
 
         const fullConvObj: Conversation = {
             id: convId,
@@ -263,23 +231,10 @@ function MessagesContent() {
         };
 
         setActiveConv(fullConvObj);
-        loadMessages(convId);
     };
 
     const openConv = (conv: Conversation) => {
         setActiveConv(conv);
-        loadMessages(conv.id);
-    };
-
-    const loadMessages = async (convId: string) => {
-        const { data } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('conversation_id', convId)
-            .order('created_at', { ascending: true });
-
-        if (data) setMessages(data);
-        scrollToBottom();
     };
 
     const scrollToBottom = () => {
@@ -289,38 +244,46 @@ function MessagesContent() {
     };
 
     const sendMessage = async () => {
-        const userId = profile?.id || user?.id;
+        const userId = profile?.id || user?.uid;
         if (!input.trim() || !activeConv || !userId) return;
 
         const body = input.trim();
         setInput("");
 
+        const now = new Date().toISOString();
+
+        // Optimistic addition
         const tempId = `temp-${Date.now()}`;
         setMessages(prev => [...prev, {
             id: tempId,
             conversation_id: activeConv.id,
             sender_id: userId,
             body,
-            created_at: new Date().toISOString()
-        } as any]);
+            created_at: now
+        }]);
         scrollToBottom();
 
         try {
-            const { error } = await supabase.from('messages').insert({
+            await addDoc(collection(db, 'messages'), {
                 conversation_id: activeConv.id,
                 sender_id: userId,
-                body
+                body,
+                created_at: now
             });
 
-            if (error) throw error;
+            // Update conversation last metadata
+            await setDoc(doc(db, 'conversations', activeConv.id), {
+                last_message_at: now,
+                last_msg: body
+            }, { merge: true });
+
         } catch (err) {
             console.error("[Messages] Failed to send message:", err);
         }
-
-        loadConversations(userId);
     };
 
     const formatTime = (isoString: string) => {
+        if (!isoString) return '';
         const d = new Date(isoString);
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
@@ -375,7 +338,7 @@ function MessagesContent() {
                                 </div>
                             )}
                             {messages.map((msg, i) => {
-                                const fromMe = msg.sender_id === profile?.id;
+                                const fromMe = msg.sender_id === (profile?.id || user?.uid);
                                 return (
                                     <motion.div key={msg.id}
                                         initial={{ opacity: 0, y: 10, scale: 0.9 }}

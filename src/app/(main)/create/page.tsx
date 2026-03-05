@@ -5,7 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ImageIcon, Type, Tag, CheckCircle2, ArrowLeft, ArrowRight, Upload, X, Loader2 } from "lucide-react";
 import TopBar from "@/components/layout/TopBar";
 import Image from "next/image";
-import { createClient } from "@/lib/supabase/client";
+import { db, storage } from "@/lib/firebase/client";
+import { collection, addDoc } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/AuthContext";
 import { useRouter } from "next/navigation";
 
@@ -13,7 +15,6 @@ const STEP_LABELS = ["Choose Media", "Write Caption", "Add Tags", "Preview & Pos
 
 export default function CreatePage() {
     const { profile, user } = useAuth();
-    const supabase = createClient();
     const router = useRouter();
     const [step, setStep] = useState(0);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -46,7 +47,7 @@ export default function CreatePage() {
         step === 3;
 
     const handlePost = async () => {
-        const userId = profile?.id || user?.id;
+        const userId = profile?.id || user?.uid;
         if (!selectedFile || !userId) return;
         setIsPosting(true);
 
@@ -54,38 +55,26 @@ export default function CreatePage() {
             // 1. Upload to Storage
             const fileExt = selectedFile.name.split('.').pop();
             const fileName = `${Math.random()}.${fileExt}`;
-            const filePath = `${userId}/${fileName}`;
+            const filePath = `post-media/${userId}/${fileName}`;
 
-            const { error: uploadError } = await supabase.storage
-                .from('post-media')
-                .upload(filePath, selectedFile);
-
-            if (uploadError) throw uploadError;
-
-            // Get public URL
-            const { data: { publicUrl } } = supabase.storage
-                .from('post-media')
-                .getPublicUrl(filePath);
+            const storageRef = ref(storage, filePath);
+            await uploadBytes(storageRef, selectedFile);
+            const publicUrl = await getDownloadURL(storageRef);
 
             // 2. Insert into Database
             const tagArray = tags.trim() ? tags.trim().split(/\s+/).map(t => t.replace('#', '')) : [];
 
-            const { data: dbData, error: dbError } = await supabase
-                .from('posts')
-                .insert({
-                    author_id: userId,
-                    image_url: publicUrl,
-                    caption,
-                    tags: tagArray
-                })
-                .select();
+            const docRef = await addDoc(collection(db, 'posts'), {
+                author_id: userId,
+                image_url: publicUrl,
+                caption,
+                tags: tagArray,
+                likes_count: 0,
+                comments_count: 0,
+                created_at: new Date().toISOString()
+            });
 
-            if (dbError) {
-                console.error('Database insert error:', dbError.message, dbError.details);
-                throw dbError;
-            }
-
-            console.log('Post inserted successfully:', dbData);
+            console.log('Post inserted successfully:', docRef.id);
 
             setPosted(true);
             setTimeout(() => {

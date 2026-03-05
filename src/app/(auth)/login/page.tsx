@@ -2,7 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { createClient } from "@/lib/supabase/client";
+import { auth, db } from "@/lib/firebase/client";
+import {
+    signInWithEmailAndPassword,
+    createUserWithEmailAndPassword,
+    sendEmailVerification,
+    GoogleAuthProvider,
+    signInWithPopup
+} from "firebase/auth";
+import { doc, getDoc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { Loader2, MailCheck } from "lucide-react";
 
@@ -13,18 +21,49 @@ export default function AuthPage() {
     const [username, setUsername] = useState("");
     const [displayName, setDisplayName] = useState("");
     const [loading, setLoading] = useState(false);
+    const [googleLoading, setGoogleLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
     const router = useRouter();
-    const supabase = createClient();
 
-    // --- ULTIMATUM: Fresh Start ---
-    // Clear stale cache on mount to prevent "Incognito-only" loops
     useEffect(() => {
         localStorage.removeItem("pulse_user");
         localStorage.removeItem("pulse_profile");
     }, []);
+
+    const handleGoogleAuth = async () => {
+        setGoogleLoading(true);
+        setError(null);
+        setSuccessMsg(null);
+        try {
+            const provider = new GoogleAuthProvider();
+            const result = await signInWithPopup(auth, provider);
+            const user = result.user;
+
+            // Check if profile exists
+            const docRef = doc(db, "profiles", user.uid);
+            const docSnap = await getDoc(docRef);
+
+            if (!docSnap.exists()) {
+                // Create profile for new Google user
+                await setDoc(docRef, {
+                    username: user.email?.split("@")[0].replace(/[^a-z0-9_.]/gi, "").toLowerCase() || `user_${user.uid.substring(0, 5)}`,
+                    displayName: user.displayName || "User",
+                    avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${user.uid}`,
+                    bio: "Hey there! I am using Pulse.",
+                    isVerified: false,
+                });
+            }
+
+            router.push("/feed");
+            router.refresh();
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setGoogleLoading(false);
+        }
+    };
 
     const handleAuth = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -35,44 +74,46 @@ export default function AuthPage() {
         try {
             if (isLogin) {
                 // Sign In
-                const { error: authError } = await supabase.auth.signInWithPassword({
-                    email,
-                    password,
-                });
-                if (authError) throw authError;
+                await signInWithEmailAndPassword(auth, email, password);
                 router.push("/feed");
                 router.refresh();
             } else {
                 // Sign Up
-                // 1. Check if username exists first since auth meta data won't error out on duplicates until trigger runs
-                const { data: existingUser } = await supabase
-                    .from("profiles")
-                    .select("username")
-                    .eq("username", username)
-                    .single();
-
-                if (existingUser) {
+                // Check if username exists
+                const q = query(collection(db, "profiles"), where("username", "==", username));
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) {
                     throw new Error("Username already taken. Please choose another.");
                 }
 
-                const { error: signUpError } = await supabase.auth.signUp({
-                    email,
-                    password,
-                    options: {
-                        data: {
-                            username,
-                            display_name: displayName || username,
-                        },
-                    },
-                });
-                if (signUpError) throw signUpError;
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                const user = userCredential.user;
 
-                // Success: Show Email Verification Alert
+                // Create profile
+                await setDoc(doc(db, "profiles", user.uid), {
+                    username,
+                    displayName: displayName || username,
+                    avatarUrl: `https://api.dicebear.com/7.x/adventurer/svg?seed=${user.uid}`,
+                    bio: "Hey there! I am using Pulse.",
+                    isVerified: false,
+                });
+
+                // Send email verification with dynamic URL for Vercel/Localhost
+                const actionCodeSettings = {
+                    url: `${window.location.origin}/login?verified=true`,
+                    handleCodeInApp: false,
+                };
+                await sendEmailVerification(user, actionCodeSettings);
+
                 setSuccessMsg("Welcome! Please check your email to verify your account before logging in.");
-                setIsLogin(true); // Switch to login form so they can log in after verifying
+                setIsLogin(true);
             }
         } catch (err: any) {
-            setError(err.message);
+            // Friendly error messages mapping
+            let msg = err.message;
+            if (err.code === "auth/email-already-in-use") msg = "This email is already registered.";
+            if (err.code === "auth/wrong-password" || err.code === "auth/user-not-found" || err.code === "auth/invalid-credential") msg = "Invalid email or password.";
+            setError(msg);
         } finally {
             setLoading(false);
         }
@@ -168,9 +209,33 @@ export default function AuthPage() {
                         )}
                     </AnimatePresence>
 
-                    <button disabled={loading} className="btn-primary" type="submit" style={{ width: "100%", padding: "14px", fontSize: "1rem", marginTop: 8, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                    <button disabled={loading || googleLoading} className="btn-primary" type="submit" style={{ width: "100%", padding: "14px", fontSize: "1rem", marginTop: 8, display: "flex", justifyContent: "center", alignItems: "center" }}>
                         {loading ? <Loader2 size={20} className="animate-spin" style={{ animation: "spin 1s linear infinite" }} /> : (isLogin ? "LOG IN" : "SIGN UP")}
                     </button>
+
+                    <div style={{ display: "flex", alignItems: "center", margin: "16px 0", gap: 12 }}>
+                        <div style={{ flex: 1, height: 1, background: "var(--border-medium)" }} />
+                        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: 600 }}>OR</span>
+                        <div style={{ flex: 1, height: 1, background: "var(--border-medium)" }} />
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={handleGoogleAuth}
+                        disabled={loading || googleLoading}
+                        className="btn-ghost"
+                        style={{ width: "100%", padding: "12px", fontSize: "0.95rem", display: "flex", justifyContent: "center", alignItems: "center", gap: 8, border: "1px solid var(--border-medium)", background: "var(--bg-elevated)", color: "var(--text-primary)" }}>
+                        {googleLoading ? <Loader2 size={18} className="animate-spin" /> : (
+                            <svg width="18" height="18" viewBox="0 0 24 24">
+                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                            </svg>
+                        )}
+                        Continue with Google
+                    </button>
+
                 </form>
 
                 <div style={{ textAlign: "center", marginTop: 24 }}>
@@ -185,3 +250,4 @@ export default function AuthPage() {
         </div>
     );
 }
+

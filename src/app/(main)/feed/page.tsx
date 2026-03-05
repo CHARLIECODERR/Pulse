@@ -10,7 +10,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useAuth } from "@/lib/AuthContext";
-import { createClient } from "@/lib/supabase/client";
+import { db } from "@/lib/firebase/client";
+import { collection, query, orderBy, onSnapshot, doc, getDoc } from "firebase/firestore";
 
 // Helper to format Supabase post to our UI Post interface
 const mapDbPostToPost = (dbPost: any): Post => {
@@ -55,7 +56,6 @@ const mapDbPostToPost = (dbPost: any): Post => {
 
 export default function FeedPage() {
     const { profile, loading: authLoading } = useAuth();
-    const supabase = createClient();
     const [activePost, setActivePost] = useState<Post | null>(null);
     const [feedMode, setFeedMode] = useState<"following" | "trending">("following");
     const [posts, setPosts] = useState<Post[]>([]);
@@ -63,92 +63,94 @@ export default function FeedPage() {
     const [page, setPage] = useState(1);
     const loaderRef = useRef<HTMLDivElement>(null);
 
-    const fetchPosts = async () => {
-        setLoading(true);
-        console.log('[FeedFetch] Starting fetch...');
-        try {
-            // Fix join ambiguity by using specific FK
-            const { data, error } = await supabase
-                .from('posts')
-                .select('*, profiles!author_id(*)')
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-
-            console.log('[FeedFetch] Success:', data?.length, 'posts');
-
-            const realPosts = (data || []).map(mapDbPostToPost);
-            setPosts([...realPosts, ...mockPosts]);
-        } catch (err: any) {
-            console.error('[FeedFetch] Global Error:', err.message || err);
-            setPosts(mockPosts);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     useEffect(() => {
-        // Real-time subscription for posts (NEW and UPDATES)
-        const channel = supabase
-            .channel('realtime-posts-sync')
-            .on('postgres_changes', {
-                event: 'INSERT',
-                schema: 'public',
-                table: 'posts'
-            }, async (payload) => {
-                console.log('[FeedRealtime] New post:', payload.new.id);
-                const { data, error } = await supabase
-                    .from('posts')
-                    .select('*, profiles!author_id(*)')
-                    .eq('id', payload.new.id)
-                    .single();
+        let unsubscribe: () => void;
 
-                if (!error && data) {
-                    const newPost = mapDbPostToPost(data);
-                    setPosts(prev => [newPost, ...prev]);
-                }
-            })
-            .on('postgres_changes', {
-                event: 'UPDATE',
-                schema: 'public',
-                table: 'posts'
-            }, (payload) => {
-                console.log('[FeedRealtime] Post updated:', payload.new.id);
-                setPosts(prev => prev.map(post => {
-                    if (post.id === payload.new.id) {
-                        return {
-                            ...post,
-                            likes: payload.new.likes_count,
-                            comments: payload.new.comments_count
-                        };
+        const setupRealtime = () => {
+            setLoading(true);
+            const q = query(collection(db, 'posts'), orderBy('created_at', 'desc'));
+            unsubscribe = onSnapshot(q, async (snapshot) => {
+                console.log('[FeedFetch] Success:', snapshot.docs.length, 'posts');
+
+                // Collect author IDs to fetch profiles efficiently
+                const authorIds = [...new Set(snapshot.docs.map(d => d.data().author_id))];
+                const profilesMap: Record<string, any> = {};
+
+                await Promise.all(authorIds.map(async id => {
+                    const docSnap = await getDoc(doc(db, "profiles", id));
+                    if (docSnap.exists()) {
+                        profilesMap[id] = { id, ...docSnap.data() };
                     }
-                    return post;
                 }));
-            })
-            .subscribe();
 
-        // Safety timeout: fetch anyway if auth takes too long (> 3s)
+                const realPosts = snapshot.docs.map(d => {
+                    const data = d.data();
+                    const author = profilesMap[data.author_id] || {
+                        id: data.author_id || 'unknown',
+                        username: 'User',
+                        displayName: 'GenX User',
+                        avatarUrl: "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
+                        isVerified: false
+                    };
+                    return {
+                        id: d.id,
+                        author: {
+                            id: author.id,
+                            username: author.username || 'user',
+                            displayName: author.displayName || author.username || 'User',
+                            avatar: author.avatarUrl || "https://api.dicebear.com/7.x/adventurer/svg?seed=user",
+                            bio: author.bio || "",
+                            followers: 0,
+                            following: 0,
+                            posts: 0,
+                            isVerified: author.isVerified || false,
+                            isFollowing: false,
+                        },
+                        image: data.image_url,
+                        caption: data.caption || "",
+                        tags: data.tags || [],
+                        likes: data.likes_count || 0,
+                        comments: data.comments_count || 0,
+                        shares: 0,
+                        isLiked: false,
+                        isBookmarked: false,
+                        timeAgo: data.created_at ? new Date(data.created_at).toLocaleDateString() : 'Just now',
+                        aspectRatio: "square" as const,
+                    };
+                });
+
+                setPosts([...realPosts, ...mockPosts]);
+                setLoading(false);
+            }, (err) => {
+                console.error('[FeedFetch] Global Error:', err);
+                setPosts(mockPosts);
+                setLoading(false);
+            });
+        };
+
         const timeout = setTimeout(() => {
             if (loading && posts.length === 0) {
-                console.log('[FeedSafety] Auth took too long, fetching anyway...');
-                fetchPosts();
+                console.log('[FeedSafety] Auth took too long, fallback to mock...');
+                setPosts(mockPosts);
+                setLoading(false);
             }
         }, 3000);
 
         if (!authLoading) {
             clearTimeout(timeout);
-            fetchPosts();
+            setupRealtime();
         }
 
         return () => {
             clearTimeout(timeout);
-            supabase.removeChannel(channel);
+            if (unsubscribe) unsubscribe();
         };
     }, [authLoading]);
 
     const handleRefresh = () => {
-        console.log('Manual refresh triggered');
-        fetchPosts();
+        // With RTDB/Firestore onSnapshot, it refreshes automatically.
+        // We can just keep it or no-op.
+        console.log('Refresh is automatic in Firebase');
     };
 
     // Infinite scroll observer (simplified for now)
