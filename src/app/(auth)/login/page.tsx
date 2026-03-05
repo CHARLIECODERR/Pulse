@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
@@ -18,6 +18,13 @@ export default function AuthPage() {
 
     const router = useRouter();
     const supabase = createClient();
+
+    // --- ULTIMATUM: Fresh Start ---
+    // Clear stale cache on mount to prevent "Incognito-only" loops
+    useEffect(() => {
+        localStorage.removeItem("pulse_user");
+        localStorage.removeItem("pulse_profile");
+    }, []);
 
     const handleAuth = async (e: React.FormEvent) => {
         e.preventDefault();

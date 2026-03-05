@@ -158,10 +158,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const signOut = async () => {
+        isFetchingProfile.current = false;
         localStorage.removeItem("pulse_user");
         localStorage.removeItem("pulse_profile");
+        // Clear all cookies by signing out
         await supabase.auth.signOut();
+        setUser(null);
+        setProfile(null);
         router.push("/login");
+        router.refresh();
     };
 
     return (

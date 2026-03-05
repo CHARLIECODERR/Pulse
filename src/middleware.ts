@@ -28,27 +28,35 @@ export async function middleware(request: NextRequest) {
         }
     )
 
+    // Prime the session before getUser() for better cookie sync
+    await supabase.auth.getSession()
+
     const {
         data: { user },
     } = await supabase.auth.getUser()
 
-    // Define protected routes (everything inside (main))
     const isAuthRoute = request.nextUrl.pathname.startsWith('/login')
 
-    // Protect all main app routes naturally since layout is shared
-    // If user is not logged in and not on login page, redirect to login
+    // Helper to carry over cookies to a redirect response
+    const redirectWithCookies = (url: string) => {
+        const redirectResponse = NextResponse.redirect(new URL(url, request.url))
+        // Copy cookies from our supabaseResponse to the redirectResponse
+        supabaseResponse.cookies.getAll().forEach(cookie => {
+            redirectResponse.cookies.set(cookie.name, cookie.value)
+        })
+        return redirectResponse
+    }
+
     if (!user && !isAuthRoute && request.nextUrl.pathname !== '/') {
-        return NextResponse.redirect(new URL('/login', request.url))
+        return redirectWithCookies('/login')
     }
 
-    // If user is logged in and trying to access login page, redirect to feed
     if (user && isAuthRoute) {
-        return NextResponse.redirect(new URL('/feed', request.url))
+        return redirectWithCookies('/feed')
     }
 
-    // If going to root /, redirect to feed (middleware will handle checking auth on /feed next)
     if (request.nextUrl.pathname === '/') {
-        return NextResponse.redirect(new URL('/feed', request.url))
+        return redirectWithCookies('/feed')
     }
 
     return supabaseResponse
